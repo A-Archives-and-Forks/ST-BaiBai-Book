@@ -49,7 +49,10 @@ export const TIME_TAG_PROMPT = `【时间锚点要求(系统强制)】
 - 标签只各出现一次,分别紧贴正文最前与最后;标签内只有时间,不要写别的。
 - 这两个标签是给记忆系统读取的锚点,请务必每次都输出。
 
-${RULE_COMPLETE_TIME_ANCHOR}`;
+${RULE_COMPLETE_TIME_ANCHOR}
+
+【不需要输出的格式】
+私密简报里面的当前状态是记忆插件给你辅助了解前文的内容，而不是要求你在正文末尾输出的格式，在无论何时都不要在正文末尾输出私密简报`;
 
 /** 当前生效的固定提示词(用户自定义优先,空则用内置默认)。 */
 export function timeTagPrompt(): string {
@@ -456,28 +459,39 @@ export function readVarsTagText(mes: string): string | null {
 
 /* ============ 自动注册「仅显示层隐藏」正则到 ST ============ */
 
-// ST 全局正则脚本存在 extension_settings.regex(数组)。我们用固定 id 标识自己这条,做到幂等。
-// id 保持历史值 'bbs-time-tag-hide' 不变(改 id 会导致老用户旧正则残留 + 新建一条重复);
-// 显示名已更新——这条正则如今同时隐藏时间标签与物品变动标签。
-const HIDE_SCRIPT_ID = 'bbs-time-tag-hide';
-const HIDE_SCRIPT_NAME = '柏宝书 · 隐藏记忆标签';
+// ST 全局正则脚本存在 extension_settings.regex(数组)。每类标签使用独立固定 id,做到幂等。
+// 时间脚本保留历史 id 'bbs-time-tag-hide':升级时原来的合并规则会原位收窄为时间规则,
+// 不会留下旧规则再额外创建一条重复规则。
+const HIDE_TIME_SCRIPT_ID = 'bbs-time-tag-hide';
+const HIDE_ITEMS_SCRIPT_ID = 'bbs-items-tag-hide';
+const HIDE_VARS_SCRIPT_ID = 'bbs-vars-tag-hide';
 // regex_placement(见 ST regex/engine.js):0=MD_DISPLAY 1=USER_INPUT 2=AI_OUTPUT
 const PLACEMENT_MD_DISPLAY = 0;
 const PLACEMENT_USER_INPUT = 1;
 const PLACEMENT_AI_OUTPUT = 2;
 
-/** 一条同时吃掉 start/end/items/vars 标签(含其内部内容)的正则字符串(ST 用 /pattern/flags 形式) */
-function hideFindRegex(): string {
-  const timeTags = `${START_TAG}|${END_TAG}`;
+/** 时间标签只允许在同一行内闭合;两个标签写成完整分支,不会交叉配对。 */
+function hideTimeFindRegex(): string {
+  const start = `<${START_TAG}\\b[^>\\r\\n]*>[^<\\r\\n]*<\\/${START_TAG}>`;
+  const end = `<${END_TAG}\\b[^>\\r\\n]*>[^<\\r\\n]*<\\/${END_TAG}>`;
+  return `/${start}|${end}/gi`;
+}
+
+/** 物品旁注允许跨行,但只隐藏「独占行 + 插件物品动词格式」的完整块。 */
+function hideItemsFindRegex(): string {
   const items = `(^|\\r?\\n)[ \\t]*<${ITEMS_TAG}\\b[^>]*>[ \\t]*\\r?\\n(?:[ \\t]*(?:获得|消耗|失去)\\s+[^\\r\\n]*(?:\\r?\\n))+[ \\t]*<\\/${ITEMS_TAG}>[ \\t]*(?=\\r?\\n|$)`;
+  return `/${items}/gi`;
+}
+
+/** 变量旁注允许跨行,但只隐藏「独占行 + 插件变量动词格式」的完整块。 */
+function hideVarsFindRegex(): string {
   const vars = `(^|\\r?\\n)[ \\t]*<${VARS_TAG}\\b[^>]*>[ \\t]*\\r?\\n(?:[ \\t]*(?:设定|变更|新增|删除)\\s+[^\\r\\n]*(?:\\r?\\n))+[ \\t]*<\\/${VARS_TAG}>[ \\t]*(?=\\r?\\n|$)`;
-  // 旁注块只隐藏「独占行 + 插件动词格式」;时间标签则隐藏成对标签里的时间文本。
-  return `/${items}|${vars}|<(${timeTags})\\b[^>]*>[\\s\\S]*?<\\/\\3>/gi`;
+  return `/${vars}/gi`;
 }
 
 /**
- * 确保 ST 里存在我们的「隐藏记忆标签」正则脚本(隐藏时间标签 + 物品变动标签,仅影响显示,不影响提示词)。
- * 幂等:按固定 id 查,缺则补、已存在则更新内容(防止旧版本格式残留)。用户手动删了下次启动会再加回。
+ * 确保 ST 里存在三条仅影响显示的隐藏正则。
+ * 幂等:逐条按固定 id 查,缺则补、已存在则更新内容(防止旧版本格式残留)。用户手动删了下次启动会再加回。
  */
 export function ensureHideRegexRegistered(): void {
   const ctx = getContext();
@@ -486,10 +500,7 @@ export function ensureHideRegexRegistered(): void {
   if (!Array.isArray(es.regex)) es.regex = [];
   const list = es.regex as Array<Record<string, unknown>>;
 
-  const script = {
-    id: HIDE_SCRIPT_ID,
-    scriptName: HIDE_SCRIPT_NAME,
-    findRegex: hideFindRegex(),
+  const common = {
     replaceString: '',
     trimStrings: [] as string[],
     // 只作用于「显示」:MD_DISPLAY;同时清掉用户输入/AI 输出显示里的残留标签,但不进提示词。
@@ -503,19 +514,43 @@ export function ensureHideRegexRegistered(): void {
     maxDepth: null,
   };
 
-  const idx = list.findIndex(s => s?.id === HIDE_SCRIPT_ID);
-  if (idx >= 0) list[idx] = { ...list[idx], ...script };
-  else list.push(script);
+  const scripts = [
+    {
+      ...common,
+      id: HIDE_TIME_SCRIPT_ID,
+      scriptName: '柏宝书 · 隐藏时间标签',
+      findRegex: hideTimeFindRegex(),
+    },
+    {
+      ...common,
+      id: HIDE_ITEMS_SCRIPT_ID,
+      scriptName: '柏宝书 · 隐藏物品标签',
+      findRegex: hideItemsFindRegex(),
+    },
+    {
+      ...common,
+      id: HIDE_VARS_SCRIPT_ID,
+      scriptName: '柏宝书 · 隐藏变量标签',
+      findRegex: hideVarsFindRegex(),
+    },
+  ];
+
+  for (const script of scripts) {
+    const idx = list.findIndex(s => s?.id === script.id);
+    if (idx >= 0) list[idx] = { ...list[idx], ...script };
+    else list.push(script);
+  }
   ctx?.saveSettingsDebounced?.();
 }
 
-/** 移除我们注册的隐藏正则(关闭时间标签功能时调用)。 */
+/** 移除我们注册的全部隐藏正则(关闭时间标签功能时调用)。 */
 export function removeHideRegex(): void {
   const ctx = getContext();
   const es = ctx?.extensionSettings as Record<string, unknown> | undefined;
   if (!es || !Array.isArray(es.regex)) return;
   const list = es.regex as Array<Record<string, unknown>>;
-  const next = list.filter(s => s?.id !== HIDE_SCRIPT_ID);
+  const ids = new Set([HIDE_TIME_SCRIPT_ID, HIDE_ITEMS_SCRIPT_ID, HIDE_VARS_SCRIPT_ID]);
+  const next = list.filter(s => !ids.has(String(s?.id ?? '')));
   if (next.length !== list.length) {
     es.regex = next;
     ctx?.saveSettingsDebounced?.();
