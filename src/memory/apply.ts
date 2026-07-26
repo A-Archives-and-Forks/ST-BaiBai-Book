@@ -170,6 +170,10 @@ function cleanNpcDelta(raw: unknown): NpcDelta | null {
   return {
     name,
     gender: optText(raw.gender),
+    age: optText(raw.age),
+    ageTime: optText(raw.ageTime),
+    relation: optText(raw.relation),
+    ties: optText(raw.ties),
     title: optText(raw.title),
     desc: optText(raw.desc),
     personality: optText(raw.personality),
@@ -188,7 +192,7 @@ function cleanNpcList(v: unknown): NpcDelta[] {
 function cleanProtagonistDelta(raw: unknown): ProtagonistDelta | null {
   if (!isRecord(raw)) return null;
   const out: ProtagonistDelta = {};
-  for (const key of ['gender', 'identity', 'appearance', 'outfit', 'condition'] as const) {
+  for (const key of ['gender', 'age', 'ageTime', 'identity', 'appearance', 'outfit', 'condition'] as const) {
     const value = patchText(raw[key]);
     if (value !== undefined) out[key] = value;
   }
@@ -649,11 +653,28 @@ function applyNpcState(n: { outfit?: string; condition?: string; important?: boo
   if (typeof src.important === 'boolean') n.important = src.important || undefined;
 }
 
-/** 主角档案是纯覆盖快照;空字符串表示清除旧值。 */
-function applyProtagonistState(target: BaibaiMemory['protagonist'], src: ProtagonistDelta): void {
+/**
+ * 把 delta 里的年龄施加到 NPC/主角上。关键:**锚点由系统盖,AI 不填**——
+ * delta 带 age 而无 ageTime 时,锚点取该叶子的故事内时间(storyTime),
+ * 之后注入/展示按「锚点→当前时间」推算,时间跳跃自动长岁。
+ * ageTime 单独出现时也采纳(手动 op / carryover 种子回填锚点用)。add 与 update 同样覆盖。
+ */
+function applyAge(n: { age?: string; ageTime?: string }, src: { age?: string; ageTime?: string }, storyTime: string): void {
+  if (typeof src.age === 'string') {
+    const a = src.age.trim();
+    n.age = a || undefined;
+    n.ageTime = a ? (src.ageTime?.trim() || storyTime || undefined) : undefined;
+  } else if (typeof src.ageTime === 'string') {
+    n.ageTime = src.ageTime.trim() || undefined;
+  }
+}
+
+/** 主角档案是纯覆盖快照;空字符串表示清除旧值。年龄走锚点机制(applyAge)。 */
+function applyProtagonistState(target: BaibaiMemory['protagonist'], src: ProtagonistDelta, storyTime: string): void {
   for (const key of ['gender', 'identity', 'appearance', 'outfit', 'condition'] as const) {
     if (typeof src[key] === 'string') target[key] = src[key]!.trim() || undefined;
   }
+  applyAge(target, src, storyTime);
 }
 
 /**
@@ -1039,7 +1060,7 @@ function applyStoredDeltaTo(mem: BaibaiMemory, d: StoredDelta, leaf: { id: strin
     const lp = normScenePath(d.locationPath);
     mem.state.locationPath = lp.length ? lp : undefined;
   }
-  if (d.protagonist) applyProtagonistState(mem.protagonist, d.protagonist);
+  if (d.protagonist) applyProtagonistState(mem.protagonist, d.protagonist, logTime || mem.state.time);
 
   // 物品(一切计数:add 默认 +1,带符号累加,数量 ≤0 自动移除)
   if (d.items) {
@@ -1122,14 +1143,21 @@ function applyStoredDeltaTo(mem: BaibaiMemory, d: StoredDelta, leaf: { id: strin
   // NPC(指令型:add 新登场 / update 改身份位置 / remove 退场)。施加序:add → update → remove。
   // update 对不存在的名字按 upsert 创建,兼容迁移后名册为空、但后续摘要误产 update 的历史数据。
   if (d.npcs) {
+    // 年龄锚点用「本叶子的故事内时间」;叶子无时间则退当前状态时间(delta.time 已在上方生效)
+    const npcTime = logTime || mem.state.time;
     for (const add of d.npcs.add ?? []) {
       if (!add?.name?.trim()) continue;
       const id = npcId(add.name);
       const ex = mem.npcs.find(n => n.id === id);
       if (ex) {
-        // 已存在:档案层(gender/title/desc/性格)add 视作补全(仅填空,不覆盖既有);
+        // 已存在:档案层(gender/title/desc/性格/关系)add 视作补全(仅填空,不覆盖既有);
         // 即时层(outfit/condition/important)仍直接覆盖(它本就是当前快照),再施加位置。
+        // 年龄同为「仅填空」:重复 add 多是复述旧信息,若覆盖会把锚点错误刷新到当前时间(冻龄);
+        // 真正的年龄变化(过生日/纠正)走 update。
         if (add.gender && !ex.gender) ex.gender = add.gender.trim();
+        if (add.age && !ex.age) applyAge(ex, add, npcTime);
+        if (add.relation && !ex.relation) ex.relation = add.relation.trim();
+        if (add.ties && !ex.ties) ex.ties = add.ties.trim();
         if (add.title && !ex.title) ex.title = add.title.trim();
         if (add.desc && !ex.desc) ex.desc = add.desc.trim();
         if (add.personality && !ex.personality) ex.personality = add.personality.trim();
@@ -1141,12 +1169,15 @@ function applyStoredDeltaTo(mem: BaibaiMemory, d: StoredDelta, leaf: { id: strin
           id,
           name: add.name.trim(),
           gender: add.gender?.trim() || undefined,
+          relation: add.relation?.trim() || undefined,
+          ties: add.ties?.trim() || undefined,
           title: add.title?.trim() || undefined,
           desc: add.desc?.trim() || undefined,
           personality: add.personality?.trim() || undefined,
           createdAt: t,
           updatedAt: t,
         };
+        applyAge(npc, add, npcTime);
         applyNpcState(npc, add);
         applyNpcPlacement(npc, add);
         mem.npcs.push(npc);
@@ -1161,6 +1192,8 @@ function applyStoredDeltaTo(mem: BaibaiMemory, d: StoredDelta, leaf: { id: strin
           id,
           name: upd.name.trim(),
           gender: upd.gender?.trim() || undefined,
+          relation: upd.relation?.trim() || undefined,
+          ties: upd.ties?.trim() || undefined,
           title: upd.title?.trim() || undefined,
           desc: upd.desc?.trim() || undefined,
           personality: upd.personality?.trim() || undefined,
@@ -1170,6 +1203,9 @@ function applyStoredDeltaTo(mem: BaibaiMemory, d: StoredDelta, leaf: { id: strin
         mem.npcs.push(n);
       }
       if (upd.gender) n.gender = upd.gender.trim();
+      applyAge(n, upd, npcTime); // 年龄覆盖 + 锚点自动刷新(过生日/纠正)
+      if (upd.relation) n.relation = upd.relation.trim();
+      if (upd.ties) n.ties = upd.ties.trim();
       if (upd.title) n.title = upd.title.trim();
       if (upd.desc) n.desc = upd.desc.trim();
       if (upd.personality) n.personality = upd.personality.trim();
@@ -1665,6 +1701,9 @@ export function upsertNpc(
   fields: {
     name: string;
     gender?: string;
+    age?: string;
+    relation?: string;
+    ties?: string;
     title?: string;
     desc?: string;
     personality?: string;
@@ -1682,6 +1721,9 @@ export function upsertNpc(
       add: [{
         name,
         gender: fields.gender?.trim() || undefined,
+        age: fields.age?.trim() || undefined,
+        relation: fields.relation?.trim() || undefined,
+        ties: fields.ties?.trim() || undefined,
         title: fields.title?.trim() || undefined,
         desc: fields.desc?.trim() || undefined,
         personality: fields.personality?.trim() || undefined,
@@ -1707,6 +1749,9 @@ export function editNpc(
   patch: {
     name?: string;
     gender?: string;
+    age?: string;
+    relation?: string;
+    ties?: string;
     title?: string;
     desc?: string;
     personality?: string;
@@ -1719,6 +1764,8 @@ export function editNpc(
 ): boolean {
   const newName = patch.name?.trim() || oldName;
   const gender = patch.gender?.trim() || undefined;
+  const relation = patch.relation?.trim() || undefined;
+  const ties = patch.ties?.trim() || undefined;
   const title = patch.title?.trim() || undefined;
   const desc = patch.desc?.trim() || undefined;
   const personality = patch.personality?.trim() || undefined;
@@ -1731,7 +1778,12 @@ export function editNpc(
   const condition = patch.condition !== undefined ? (patch.condition.trim() || undefined) : prev?.condition;
   const important = patch.important !== undefined ? patch.important : prev?.important;
 
-  const fields = { gender, title, desc, personality, outfit, condition, important, follow, location };
+  // 年龄:值没变(或未提供)时必须连旧锚点一起带上,否则重放会把锚点错误刷新到本叶子时间(等于冻龄);
+  // 用户真改了年龄才留空 ageTime,让重放盖上当前故事时间作新锚点。
+  const age = patch.age !== undefined ? (patch.age.trim() || undefined) : prev?.age;
+  const ageTime = age && age === prev?.age ? prev?.ageTime : undefined;
+
+  const fields = { gender, age, ageTime, relation, ties, title, desc, personality, outfit, condition, important, follow, location };
   if (norm(newName) !== norm(oldName)) {
     return appendOpToLatestLeaf({
       npcs: { remove: [oldName], add: [{ name: newName, ...fields }] },

@@ -6,6 +6,7 @@ import ModalMask from '@/components/ModalMask.vue';
 import SummaryOnlyNotice from '@/components/SummaryOnlyNotice.vue';
 import { classifyNpcPresence, editNpc, removeNpc, setNpcFollow, setNpcImportant, setProtagonist, upsertNpc } from '@/memory/apply';
 import { derivedMeta, memory } from '@/memory/store';
+import { ageDisplay } from '@/memory/timeRel';
 import type { MemNpc } from '@/memory/types';
 import { getContext } from '@/st/context';
 import { computed, nextTick, ref } from 'vue';
@@ -18,14 +19,27 @@ const protagonistName = computed(() => {
 });
 const protagonistHasData = computed(() => Object.values(memory.protagonist).some(value => !!value?.trim()));
 const protagonistHasDetails = computed(() => [
+  memory.protagonist.age,
   memory.protagonist.identity,
   memory.protagonist.appearance,
   memory.protagonist.outfit,
   memory.protagonist.condition,
 ].some(value => !!value?.trim()));
 
+// 年龄显示:按锚点+当前故事时间推算(与注入端同一函数,界面显示 = AI 收到的)
+function shownAge(age?: string, ageTime?: string): string {
+  return ageDisplay(age, ageTime, memory.state.time);
+}
+// 年龄悬浮提示:显示原始锚点,帮用户理解「约26岁」是怎么来的
+function ageTitle(age?: string, ageTime?: string): string {
+  if (!age?.trim()) return '';
+  return ageTime?.trim() ? `记录于 ${ageTime.trim()}:${age.trim()}(随剧情时间自动推算)` : `年龄:${age.trim()}`;
+}
+const protagonistAge = computed(() => shownAge(memory.protagonist.age, memory.protagonist.ageTime));
+
 interface ProtagonistDraft {
   gender: string;
+  age: string;
   identity: string;
   appearance: string;
   outfit: string;
@@ -37,6 +51,7 @@ function openProtagonistEdit() {
   if (!hasLeaf.value) return;
   protagonistEditing.value = {
     gender: memory.protagonist.gender ?? '',
+    age: memory.protagonist.age ?? '',
     identity: memory.protagonist.identity ?? '',
     appearance: memory.protagonist.appearance ?? '',
     outfit: memory.protagonist.outfit ?? '',
@@ -49,7 +64,9 @@ function cancelProtagonistEdit() {
 function saveProtagonistEdit() {
   const draft = protagonistEditing.value;
   if (!draft) return;
-  if (setProtagonist({ ...draft })) protagonistEditing.value = null;
+  // 年龄没改时带上旧锚点,防止重放把锚点刷成「此刻」(等于错误冻龄);真改了才留给重放盖新锚点
+  const ageTime = draft.age.trim() && draft.age.trim() === memory.protagonist.age ? memory.protagonist.ageTime : undefined;
+  if (setProtagonist({ ...draft, ageTime })) protagonistEditing.value = null;
 }
 
 // 触屏判定:跳过弹窗自动聚焦(移动端自动聚焦会弹输入法挡界面),与场景/摘要页一致。
@@ -107,6 +124,9 @@ const nameInput = ref<HTMLInputElement | null>(null);
 interface NpcDraft {
   name: string;
   gender: string;
+  age: string;
+  relation: string;
+  ties: string;
   title: string;
   personality: string;
   desc: string;
@@ -117,7 +137,7 @@ interface NpcDraft {
   location: string;
 }
 function emptyDraft(): NpcDraft {
-  return { name: '', gender: '', title: '', personality: '', desc: '', outfit: '', condition: '', important: false, follow: false, location: memory.state.location || '' };
+  return { name: '', gender: '', age: '', relation: '', ties: '', title: '', personality: '', desc: '', outfit: '', condition: '', important: false, follow: false, location: memory.state.location || '' };
 }
 const draft = ref<NpcDraft>(emptyDraft());
 
@@ -136,6 +156,9 @@ function addNpc() {
   const ok = upsertNpc({
     name: d.name,
     gender: d.gender,
+    age: d.age,
+    relation: d.relation,
+    ties: d.ties,
     title: d.title,
     personality: d.personality,
     desc: d.desc,
@@ -160,6 +183,9 @@ function openEdit(npc: MemNpc) {
     oldName: npc.name,
     name: npc.name,
     gender: npc.gender ?? '',
+    age: npc.age ?? '',
+    relation: npc.relation ?? '',
+    ties: npc.ties ?? '',
     title: npc.title ?? '',
     personality: npc.personality ?? '',
     desc: npc.desc ?? '',
@@ -179,6 +205,9 @@ function saveEdit() {
   editNpc(e.oldName, {
     name: e.name,
     gender: e.gender,
+    age: e.age,
+    relation: e.relation,
+    ties: e.ties,
     title: e.title,
     personality: e.personality,
     desc: e.desc,
@@ -229,6 +258,7 @@ function confirmRemove() {
           <div class="bbs-npc-head">
             <span class="bbs-npc-name">{{ protagonistName }}</span>
             <span v-if="memory.protagonist.gender" class="bbs-npc-gender">{{ memory.protagonist.gender }}</span>
+            <span v-if="protagonistAge" class="bbs-npc-gender" :title="ageTitle(memory.protagonist.age, memory.protagonist.ageTime)">{{ protagonistAge }}</span>
             <span class="bbs-npc-acts">
               <button
                 class="bbs-item-act"
@@ -267,6 +297,7 @@ function confirmRemove() {
               <div class="bbs-npc-head">
                 <span class="bbs-npc-name">{{ n.name }}</span>
                 <span v-if="n.gender" class="bbs-npc-gender">{{ n.gender }}</span>
+                <span v-if="shownAge(n.age, n.ageTime)" class="bbs-npc-gender" :title="ageTitle(n.age, n.ageTime)">{{ shownAge(n.age, n.ageTime) }}</span>
                 <span v-if="n.title" class="bbs-npc-flag">{{ n.title }}</span>
                 <span class="bbs-npc-acts">
                   <button class="bbs-item-act bbs-npc-star active" type="button" title="主要角色 · 点击取消" @click="toggleImportant(n)"><Icon name="star" /></button>
@@ -274,7 +305,8 @@ function confirmRemove() {
                   <button class="bbs-item-act bbs-item-del" type="button" title="删除" @click="askRemove(n)"><Icon name="trash" /></button>
                 </span>
               </div>
-              <dl v-if="n.outfit || n.condition || n.follow || n.location" class="bbs-npc-fields">
+              <dl v-if="n.relation || n.outfit || n.condition || n.follow || n.location" class="bbs-npc-fields">
+                <div v-if="n.relation" class="bbs-npc-field f-rel"><dt>关系</dt><dd>{{ n.relation }}</dd></div>
                 <div v-if="n.outfit" class="bbs-npc-field f-outfit"><dt>着装</dt><dd>{{ n.outfit }}</dd></div>
                 <div v-if="n.condition" class="bbs-npc-field f-cond"><dt>状态</dt><dd>{{ n.condition }}</dd></div>
                 <div v-if="n.follow || n.location" class="bbs-npc-field f-loc">
@@ -301,6 +333,7 @@ function confirmRemove() {
               <div class="bbs-npc-head">
                 <span class="bbs-npc-name">{{ n.name }}</span>
                 <span v-if="n.gender" class="bbs-npc-gender">{{ n.gender }}</span>
+                <span v-if="shownAge(n.age, n.ageTime)" class="bbs-npc-gender" :title="ageTitle(n.age, n.ageTime)">{{ shownAge(n.age, n.ageTime) }}</span>
                 <span v-if="n.follow" class="bbs-npc-flag is-follow"><Icon name="pin" />随行</span>
                 <span v-else-if="n.location" class="bbs-npc-flag"><Icon name="scenes" />{{ n.location }}</span>
                 <span class="bbs-npc-acts">
@@ -325,12 +358,14 @@ function confirmRemove() {
                   <button class="bbs-item-act bbs-item-del" type="button" title="删除" @click="askRemove(n)"><Icon name="trash" /></button>
                 </span>
               </div>
-              <dl v-if="n.title || n.personality || n.desc || n.outfit || n.condition" class="bbs-npc-fields">
+              <dl v-if="n.title || n.relation || n.ties || n.personality || n.desc || n.outfit || n.condition" class="bbs-npc-fields">
                 <div v-if="n.title" class="bbs-npc-field f-title"><dt>身份</dt><dd>{{ n.title }}</dd></div>
+                <div v-if="n.relation" class="bbs-npc-field f-rel"><dt>关系</dt><dd>{{ n.relation }}</dd></div>
                 <div v-if="n.outfit" class="bbs-npc-field f-outfit"><dt>着装</dt><dd>{{ n.outfit }}</dd></div>
                 <div v-if="n.condition" class="bbs-npc-field f-cond"><dt>状态</dt><dd>{{ n.condition }}</dd></div>
                 <div v-if="n.personality" class="bbs-npc-field f-trait"><dt>性格</dt><dd>{{ n.personality }}</dd></div>
                 <div v-if="n.desc" class="bbs-npc-field f-desc"><dt>外貌</dt><dd>{{ n.desc }}</dd></div>
+                <div v-if="n.ties" class="bbs-npc-field f-ties"><dt>人际</dt><dd>{{ n.ties }}</dd></div>
               </dl>
             </div>
           </article>
@@ -351,6 +386,7 @@ function confirmRemove() {
               <div class="bbs-npc-head">
                 <span class="bbs-npc-name">{{ n.name }}</span>
                 <span v-if="n.gender" class="bbs-npc-gender">{{ n.gender }}</span>
+                <span v-if="shownAge(n.age, n.ageTime)" class="bbs-npc-gender" :title="ageTitle(n.age, n.ageTime)">{{ shownAge(n.age, n.ageTime) }}</span>
                 <span v-if="n.location" class="bbs-npc-flag"><Icon name="scenes" />{{ n.location }}</span>
                 <span class="bbs-npc-acts">
                   <button
@@ -373,8 +409,9 @@ function confirmRemove() {
                   <button class="bbs-item-act bbs-item-del" type="button" title="删除" @click="askRemove(n)"><Icon name="trash" /></button>
                 </span>
               </div>
-              <dl v-if="n.title || n.personality" class="bbs-npc-fields">
+              <dl v-if="n.title || n.relation || n.personality" class="bbs-npc-fields">
                 <div v-if="n.title" class="bbs-npc-field f-title"><dt>身份</dt><dd>{{ n.title }}</dd></div>
+                <div v-if="n.relation" class="bbs-npc-field f-rel"><dt>关系</dt><dd>{{ n.relation }}</dd></div>
                 <div v-if="n.personality" class="bbs-npc-field f-trait"><dt>性格</dt><dd>{{ n.personality }}</dd></div>
               </dl>
             </div>
@@ -396,6 +433,7 @@ function confirmRemove() {
               <div class="bbs-npc-head">
                 <span class="bbs-npc-name">{{ n.name }}</span>
                 <span v-if="n.gender" class="bbs-npc-gender">{{ n.gender }}</span>
+                <span v-if="shownAge(n.age, n.ageTime)" class="bbs-npc-gender" :title="ageTitle(n.age, n.ageTime)">{{ shownAge(n.age, n.ageTime) }}</span>
                 <span v-if="n.location" class="bbs-npc-flag"><Icon name="scenes" />{{ n.location }}</span>
                 <span v-else class="bbs-npc-flag is-nowhere">所在不明</span>
                 <span class="bbs-npc-acts">
@@ -419,8 +457,9 @@ function confirmRemove() {
                   <button class="bbs-item-act bbs-item-del" type="button" title="删除" @click="askRemove(n)"><Icon name="trash" /></button>
                 </span>
               </div>
-              <dl v-if="n.title" class="bbs-npc-fields">
-                <div class="bbs-npc-field f-title"><dt>身份</dt><dd>{{ n.title }}</dd></div>
+              <dl v-if="n.title || n.relation" class="bbs-npc-fields">
+                <div v-if="n.title" class="bbs-npc-field f-title"><dt>身份</dt><dd>{{ n.title }}</dd></div>
+                <div v-if="n.relation" class="bbs-npc-field f-rel"><dt>关系</dt><dd>{{ n.relation }}</dd></div>
               </dl>
             </div>
           </article>
@@ -442,6 +481,10 @@ function confirmRemove() {
         <label class="bbs-modal-field">
           <span class="bbs-modal-label">性别</span>
           <input v-model="protagonistEditing.gender" class="bbs-input" type="text" placeholder="如:男、女" />
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">年龄(记录当时的值,随剧情时间自动推算)</span>
+          <input v-model="protagonistEditing.age" class="bbs-input" type="text" placeholder="如:25、二十出头" />
         </label>
         <label class="bbs-modal-field">
           <span class="bbs-modal-label">当前身份 / 职业 / 种族 / 公开地位</span>
@@ -482,8 +525,20 @@ function confirmRemove() {
           <input v-model="draft.gender" class="bbs-input" type="text" placeholder="如:男、女" @keydown.enter="addNpc" />
         </label>
         <label class="bbs-modal-field">
+          <span class="bbs-modal-label">年龄(记录当时的值,随剧情时间自动推算)</span>
+          <input v-model="draft.age" class="bbs-input" type="text" placeholder="如:25、二十出头" @keydown.enter="addNpc" />
+        </label>
+        <label class="bbs-modal-field">
           <span class="bbs-modal-label">身份(职业 / 与主角的关系)</span>
           <textarea v-model="draft.title" v-autosize class="bbs-input bbs-modal-textarea bbs-modal-autogrow" rows="1" placeholder="如:归雁客栈掌柜、青梅竹马"></textarea>
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">与主角的关系(称谓在前 + 一句态度)</span>
+          <textarea v-model="draft.relation" v-autosize class="bbs-input bbs-modal-textarea bbs-modal-autogrow" rows="1" placeholder="如:主角的师姐,明面冷淡暗中维护"></textarea>
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">与其他角色的关系(仅血缘 / 婚姻 / 宿敌等长期关系)</span>
+          <textarea v-model="draft.ties" v-autosize class="bbs-input bbs-modal-textarea bbs-modal-autogrow" rows="1" placeholder="如:阿黛尔之父;与镇长有旧怨"></textarea>
         </label>
         <label class="bbs-modal-field">
           <span class="bbs-modal-label">性格</span>
@@ -538,8 +593,20 @@ function confirmRemove() {
           <input v-model="editing.gender" class="bbs-input" type="text" placeholder="如:男、女" />
         </label>
         <label class="bbs-modal-field">
+          <span class="bbs-modal-label">年龄(记录当时的值,随剧情时间自动推算;不改则保留原锚点)</span>
+          <input v-model="editing.age" class="bbs-input" type="text" placeholder="如:25、二十出头" />
+        </label>
+        <label class="bbs-modal-field">
           <span class="bbs-modal-label">身份(职业 / 与主角的关系)</span>
           <textarea v-model="editing.title" v-autosize class="bbs-input bbs-modal-textarea bbs-modal-autogrow" rows="1" placeholder="如:归雁客栈掌柜、青梅竹马"></textarea>
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">与主角的关系(称谓在前 + 一句态度)</span>
+          <textarea v-model="editing.relation" v-autosize class="bbs-input bbs-modal-textarea bbs-modal-autogrow" rows="1" placeholder="如:主角的师姐,明面冷淡暗中维护"></textarea>
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">与其他角色的关系(仅血缘 / 婚姻 / 宿敌等长期关系)</span>
+          <textarea v-model="editing.ties" v-autosize class="bbs-input bbs-modal-textarea bbs-modal-autogrow" rows="1" placeholder="如:阿黛尔之父;与镇长有旧怨"></textarea>
         </label>
         <label class="bbs-modal-field">
           <span class="bbs-modal-label">性格</span>
@@ -854,6 +921,15 @@ function confirmRemove() {
   background: var(--bbs-surface-2);
   color: var(--bbs-ink-muted);
 }
+/* 与主角的关系:强调色标签——关系是「他是谁的谁」,与身份同级重要 */
+.bbs-npc-field.f-rel dt {
+  background: var(--bbs-accent-soft);
+  color: var(--bbs-accent);
+}
+.bbs-npc-field.f-rel dd {
+  color: var(--bbs-ink);
+}
+/* 人际(与其他角色):中性标签(档案层次要细节) */
 /* 外貌 / 所在:中性标签(沿用默认),作次要细节 */
 
 /* 主要角色无状态时的占位提示:引导补录当前状态,避免空卡 */

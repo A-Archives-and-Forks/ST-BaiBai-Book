@@ -119,10 +119,13 @@ function fmtItem(x: ItemDelta): { text: string; sub?: string } {
 // 一处定义,避免多处重复且保证一致。key=NpcDelta 字段名,draft=edit 草稿字段名,label=展示/占位。
 const NPC_FIELDS = [
   { key: 'title', draft: 'title', label: '身份' },
+  { key: 'age', draft: 'npcAge', label: '年龄' },
+  { key: 'relation', draft: 'relation', label: '关系' },
   { key: 'outfit', draft: 'outfit', label: '着装' },
   { key: 'condition', draft: 'condition', label: '状态' },
   { key: 'desc', draft: 'npcDesc', label: '外貌' },
   { key: 'personality', draft: 'personality', label: '性格' },
+  { key: 'ties', draft: 'ties', label: '人际' },
   { key: 'location', draft: 'npcLoc', label: '位置' },
 ] as const;
 
@@ -131,11 +134,14 @@ const NPC_FIELDS = [
 function fmtNpc(x: NpcDelta): { text: string; sub?: string } {
   const text = x.title ? `${x.name}·${x.title}` : x.name;
   const parts: string[] = [];
-  // 身份已进主文本(名·身份),副文本从「着装」起,避免重复
+  // 身份已进主文本(名·身份),副文本从「年龄」起,避免重复
+  if (x.age) parts.push(`年龄:${x.age}`);
+  if (x.relation) parts.push(`关系:${x.relation}`);
   if (x.outfit) parts.push(`着装:${x.outfit}`);
   if (x.condition) parts.push(`状态:${x.condition}`);
   if (x.desc) parts.push(`外貌:${x.desc}`);
   if (x.personality) parts.push(`性格:${x.personality}`);
+  if (x.ties) parts.push(`人际:${x.ties}`);
   if (x.location) parts.push(`位置:${x.location}`);
   if (x.follow === true) parts.push('随行');
   if (x.important === true) parts.push('主要角色');
@@ -165,6 +171,8 @@ const protagonistTags = computed<Tag[]>(() => {
   if (!protagonist) return [];
   const labels: Record<keyof typeof protagonist, string> = {
     gender: '性别',
+    age: '年龄',
+    ageTime: '年龄锚点',
     identity: '身份',
     appearance: '外貌',
     outfit: '着装',
@@ -262,7 +270,7 @@ const editKey = ref<string | null>(null);
 const edit = reactive<{
   text: string; timeStart: string; timeEnd: string; location: string;
   name: string; qty: string; desc: string; content: string;
-  title: string; outfit: string; condition: string; npcDesc: string; personality: string; npcLoc: string;
+  title: string; npcAge: string; relation: string; ties: string; outfit: string; condition: string; npcDesc: string; personality: string; npcLoc: string;
   varPath: string; varKey: string; varValue: string; varDelta: string;
 }>({
   text: '',
@@ -274,6 +282,9 @@ const edit = reactive<{
   desc: '',
   content: '',
   title: '',
+  npcAge: '',
+  relation: '',
+  ties: '',
   outfit: '',
   condition: '',
   npcDesc: '',
@@ -416,6 +427,9 @@ function editTag(tag: Tag) {
   edit.desc = '';
   edit.content = '';
   edit.title = '';
+  edit.npcAge = '';
+  edit.relation = '';
+  edit.ties = '';
   edit.outfit = '';
   edit.condition = '';
   edit.npcDesc = '';
@@ -441,6 +455,9 @@ function editTag(tag: Tag) {
       const x = (tag.bucket === 'add' ? dd.npcs?.add : dd.npcs?.update)?.[tag.idx];
       edit.name = x?.name ?? '';
       edit.title = x?.title ?? '';
+      edit.npcAge = x?.age ?? '';
+      edit.relation = x?.relation ?? '';
+      edit.ties = x?.ties ?? '';
       edit.outfit = x?.outfit ?? '';
       edit.condition = x?.condition ?? '';
       edit.npcDesc = x?.desc ?? '';
@@ -491,11 +508,15 @@ function saveTag(tag: Tag) {
           // 各档案/即时字段走注册表:有值即写、留空即删该键(空字段不落进 delta)。
           // 本轮未渲染的字段其草稿已被 editTag 清空 → 会 delete,但它本就不在 delta,无副作用。
           const rec = x as unknown as Record<string, unknown>;
+          const prevAge = x.age;
           for (const f of NPC_FIELDS) {
             const t = (edit[f.draft] as string).trim();
             if (t) rec[f.key] = t;
             else delete rec[f.key];
           }
+          // 年龄被改动时清掉 delta 里可能残留的旧锚点(手动编辑写入的 ageTime),
+          // 让重放按本叶子时间盖新锚点;没改则保留原锚点不动。
+          if (x.age !== prevAge) delete rec.ageTime;
         }
       }
     } else if (tag.key.startsWith('plan:add:')) {

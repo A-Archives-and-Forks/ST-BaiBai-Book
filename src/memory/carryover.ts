@@ -123,6 +123,11 @@ function encodeStateAsDelta(state: ReturnType<typeof deriveMemory>): StoredDelta
       add: state.npcs.map(n => ({
         name: n.name,
         gender: n.gender,
+        // 年龄连同原锚点一起带走:不带 ageTime 的话,种子叶子重放会把锚点刷成建新对话当天,年龄推算全错
+        age: n.age,
+        ageTime: n.ageTime,
+        relation: n.relation,
+        ties: n.ties,
         title: n.title,
         desc: n.desc,
         personality: n.personality,

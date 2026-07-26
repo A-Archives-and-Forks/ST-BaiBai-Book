@@ -152,6 +152,7 @@ export const RULE_SCENES = `═══ 【场景/地点规则】(scenes 字段,�
 export const RULE_PROTAGONIST = `═══ 【主角当前档案规则】(protagonist 字段,覆盖型) ═══
 这是 {{user}} 本人的当前客观档案,与 NPC 名册分开。只在【本轮对话】明确揭示或改变了会影响后续续写的信息时输出:
   ✦ gender:明确的性别/性别表现。
+  ✦ age:年龄。**在正文明确提到时写**(档案里还没有→补填;已有→仅明确纠正/变化才写),写正文原话的值(如「25」「二十出头」),**不要自己按时间流逝换算**——系统会记录此刻的故事时间作锚点,以后随剧情时间自动推算,你反复输出反而会把锚点刷乱。
   ✦ identity:当前身份、职业、种族、公开地位;发生变化时写变化后的完整当前值。
   ✦ appearance:当前稳定外貌/身体特征,如发色、体型、永久伤疤、变身后的身体;普通表情和短暂姿势不记。
   ✦ outfit:当前完整着装;换装、衣物破损/染血/打湿后覆盖刷新。
@@ -174,6 +175,13 @@ export const RULE_NPCS = `═══ 【NPC 规则】(npcs 字段,极严筛选) �
 【字段】每个 NPC 可带(分「档案层」与「即时层」,更新门槛完全不同,务必区分):
   ┃ 档案层(他是谁/长什么样,长期不变,高门槛,几乎不更新):
   ✦ gender:**性别**(短值,如「男」「女」)——记一次即可。**极重要**:性别在所有分档都注入(包括不在场),防你在后续剧情搞错该角色性别。首次记录时务必填,除非正文确实未透露。
+  ✦ age:**年龄**——在正文**明确**提到时记(自报、被介绍、文档写明),写正文原话的值(「25」「二十出头」都行):名册里还没有年龄 → 补填;已有年龄 → 仅正文明确纠正/变化(过生日、改龄)才 update。**绝不要按时间流逝自己换算年龄**:系统会记下此刻的故事时间作锚点、以后随剧情时间自动推算;你若隔三差五重写一遍,反而把锚点刷乱。正文没提就不填,禁止按外貌猜。
+  ✦ relation:**与主角({{user}})的关系**(覆盖型)——格式「称谓,一句态度/立场」,**称谓写在最前**(如「主角的师姐,明面冷淡暗中维护」)。首次记录互动角色时尽量填。
+    【质变的证据门槛(极重要)】update relation 只认三种证据:人物**明确说出**(公开断绝、当面告白定情)、双方**明确约定**(结盟、拜师、成婚),或**无歧义的客观事件**(一方杀了对方至亲、正式退婚)。
+    ✗ 单次争吵、冷战、赌气离开、一次亲密举动、送礼、照顾、短暂分离,**都不构成质变**——relation 保持不动,把事件写进 summary 即可。典型错误:「吵了一架」写成「已彻底决裂」、「和好前先写了『已和好』」——**严禁**。
+    ✗ 态度半句只写可观察事实(「近日因 X 事争吵,表面冷淡」),不下心理结论(「深爱」「恨之入骨」正文没明说就不能写)。
+    ✦ update 时**称谓部分保持不变**(师姐吵架了还是师姐),通常只更新态度半句;称谓本身变了(结拜、成婚、相认)才连称谓一起改。
+  ✦ ties:**与其他角色的重要关系**(高门槛)——只记长期结构性关系(血缘/婚姻/主仆/宿敌),一句话并列(如「阿黛尔之父;与镇长有旧怨」)。普通认识不记;好感度等数值随剧情波动的关系走自定义变量,不写这里。update 是整体覆盖,写累积后的完整内容;质变证据门槛与 relation 同。
   ✦ title:身份/职业一句话(如「归雁客栈掌柜」「主角的青梅竹马」)——**最重要**,这是该 NPC 不在场时唯一会被发给后续剧情的信息。
   ✦ desc:**固定外貌**——只写发色、身材、五官、疤痕、惯常气质等**长期不变**的体貌特征,**不要写当下穿什么**(那是 outfit)。
   ✦ personality:性格(简短,如「沉默寡言、护短」)。
@@ -332,6 +340,7 @@ ${RULE_LONGTERM_DB}
   "locationPath": ["在【已知地点】里、与上面 location 对应的场景节点完整路径,由粗到细(可比 location 粗)。给了 location 就尽量给它,作精确定位"],
   "protagonist": {
     "gender": "主角明确的性别/性别表现(有新增或变化才写)",
+    "age": "主角年龄(仅首次明确或明确变化才写,写原话值,勿自行按时间换算)",
     "identity": "主角当前身份/职业/种族/公开地位(有新增或变化才写)",
     "appearance": "主角当前稳定外貌/身体特征(有新增或变化才写)",
     "outfit": "主角当前完整着装(换装或衣物状态变化才写;清空用空字符串)",
@@ -348,8 +357,8 @@ ${RULE_LONGTERM_DB}
     "reparent": [{ "node": ["某已有地点当前完整路径"], "newPath": ["新上级","...","该地点"], "descs": { "新上级": "新上级的描述" } }]
   },
   "npcs": {
-    "add": [{ "name": "NPC名", "gender": "性别(如「男」「女」,首次记录务必填)", "title": "身份/职业一句话", "desc": "固定外貌:发色/身材/疤痕等长期特征,勿写当下穿着(可选)", "personality": "性格(可选)", "outfit": "当前着装(可选,即时层)", "condition": "当前状态/健康,如受伤/疲惫(可选,即时层)", "important": "核心主演填true(可选)", "location": "所在地点(定点NPC)", "follow": "随行同伴填true(可选)" }],
-    "update": [{ "name": "已有NPC名", "gender": "补填性别(可选)", "title": "新身份(可选)", "desc": "新固定外貌(可选)", "personality": "新性格(可选)", "outfit": "换装后的当前着装(可选)", "condition": "变化后的状态(可选)", "important": "升/降主要角色true/false(可选)", "location": "新所在地(可选)", "follow": "随行true/离队false(可选)" }],
+    "add": [{ "name": "NPC名", "gender": "性别(如「男」「女」,首次记录务必填)", "age": "年龄(正文明确才填,写原话值,勿换算)", "relation": "与主角的关系:称谓在前+一句态度(如「主角的师姐,明面冷淡暗中维护」)", "ties": "与其他角色的重要关系(仅血缘/婚姻/宿敌等长期结构,可选)", "title": "身份/职业一句话", "desc": "固定外貌:发色/身材/疤痕等长期特征,勿写当下穿着(可选)", "personality": "性格(可选)", "outfit": "当前着装(可选,即时层)", "condition": "当前状态/健康,如受伤/疲惫(可选,即时层)", "important": "核心主演填true(可选)", "location": "所在地点(定点NPC)", "follow": "随行同伴填true(可选)" }],
+    "update": [{ "name": "已有NPC名", "gender": "补填性别(可选)", "age": "补填或正文明确纠正后的年龄(可选,勿按时间流逝自行换算)", "relation": "质变后的新关系(可选,称谓在前;仅限明确说出/约定/无歧义客观事件,吵架冷战不算)", "ties": "更新后的完整人际关系(可选,整体覆盖)", "title": "新身份(可选)", "desc": "新固定外貌(可选)", "personality": "新性格(可选)", "outfit": "换装后的当前着装(可选)", "condition": "变化后的状态(可选)", "important": "升/降主要角色true/false(可选)", "location": "新所在地(可选)", "follow": "随行true/离队false(可选)" }],
     "remove": ["永久退场的已有NPC名"]
   },
   "plans": {
@@ -593,7 +602,7 @@ interface BuildArgs {
   /** 已知地点(完整路径 + 描述,供 AI 复用命名、防重复记录、判断 reparent) */
   scenes: { path: string[]; desc?: string }[];
   /** 已登场 NPC(供 AI 复用命名、防重复记录、判断状态更新) */
-  npcs: { name: string; gender?: string; title?: string; important?: boolean; outfit?: string; condition?: string; follow?: boolean; location?: string }[];
+  npcs: { name: string; gender?: string; age?: string; ageTime?: string; relation?: string; title?: string; important?: boolean; outfit?: string; condition?: string; follow?: boolean; location?: string }[];
   /** 未了结计划(顺序即编号 p1..pn);createdTime/targetTime 为故事内时间(可空) */
   openPlans: { kind: 'plan' | 'suspense'; content: string; createdTime?: string; targetTime?: string }[];
   /** 近期已完成的计划/悬念(已按 resolvedAt 倒序取好最近 N 条);防副模型重复记录。空数组→渲染「(无)」 */
@@ -633,10 +642,14 @@ export function fmtItems(items: BuildArgs['items']): string {
     .join('\n');
 }
 
-/** 主角当前客观档案。字段始终全量展示,不参与 NPC 的在场分档。 */
+/** 主角当前客观档案。字段始终全量展示,不参与 NPC 的在场分档。年龄显示带锚点(勿再重复记录)。 */
 export function fmtProtagonist(protagonist: MemProtagonist): string {
+  const age = protagonist.age
+    ? `${protagonist.age}${protagonist.ageTime ? `(记录于 ${protagonist.ageTime})` : ''}`
+    : '';
   const rows: Array<[string, string | undefined]> = [
     ['性别', protagonist.gender],
+    ['年龄', age],
     ['身份', protagonist.identity],
     ['外貌', protagonist.appearance],
     ['着装', protagonist.outfit],
@@ -669,7 +682,8 @@ export function fmtScenes(scenes: BuildArgs['scenes']): string {
 
 /**
  * 已登场 NPC 名册:供 AI 复用命名、避免重复记录、判断更新/退场/状态演变。
- * 每条显示 名 + 性别 + ★主要 + [随行/所在地] + 身份 + 当前即时状态(着装/状态)。
+ * 每条显示 名 + 性别 + 年龄(带记录时点,示意「已记过、勿重复」)+ ★主要 + [随行/所在地] + 身份
+ * + 与主角关系 + 当前即时状态(着装/状态)。
  * 性别在所有分档都发(包括不在场),防 AI 搞错性别;即时状态进名册是有意为之:
  * AI 要据此判断「是否该更新着装」「离场的主要角色该不该推演演变」。
  * 性格/外貌仍不进(够识别复用即可,省 token)。空则「(无)」。
@@ -679,14 +693,21 @@ export function fmtNpcs(npcs: BuildArgs['npcs']): string {
   return npcs
     .map(n => {
       const star = n.important ? '★ ' : '';
-      const gender = oneLine(n.gender) ? `(${oneLine(n.gender)})` : '';
+      const inBracket: string[] = [];
+      if (oneLine(n.gender)) inBracket.push(oneLine(n.gender));
+      // 年龄带记录时点:告诉副模型「此值是那时的,系统会自动推算,无需也不要重写」
+      if (oneLine(n.age)) inBracket.push(`${oneLine(n.age)}${n.ageTime ? `·记于${oneLine(n.ageTime)}` : ''}`);
+      const bracket = inBracket.length ? `(${inBracket.join('·')})` : '';
       const place = n.follow ? ' [随行]' : oneLine(n.location) ? ` [在:${oneLine(n.location)}]` : '';
-      const title = oneLine(n.title) ? ` —— ${oneLine(n.title)}` : '';
+      const tail: string[] = [];
+      if (oneLine(n.title)) tail.push(oneLine(n.title));
+      if (oneLine(n.relation)) tail.push(`与主角:${oneLine(n.relation)}`);
+      const title = tail.length ? ` —— ${tail.join(';')}` : '';
       const state: string[] = [];
       if (oneLine(n.outfit)) state.push(`着装:${oneLine(n.outfit)}`);
       if (oneLine(n.condition)) state.push(`状态:${oneLine(n.condition)}`);
       const stateStr = state.length ? ` 〔${state.join(';')}〕` : '';
-      return `  - ${star}${n.name}${gender}${place}${title}${stateStr}`;
+      return `  - ${star}${n.name}${bracket}${place}${title}${stateStr}`;
     })
     .join('\n');
 }
@@ -1062,7 +1083,8 @@ export const THINKING_CHECKLIST = `【输出前思考】
    - 用一两句话概括这一楼发生了什么。
 
 1b. 主角档案盘点(对照【主角当前档案】)
-   - 本楼是否明确揭示或改变了 {{user}} 的性别、身份、稳定外貌、当前着装或身体状态?
+   - 本楼是否明确揭示或改变了 {{user}} 的性别、年龄、身份、稳定外貌、当前着装或身体状态?
+   - 年龄:正文明确提到才写原话值(档案里没有→补填;已有→仅明确纠正才动)——系统按锚点自动推算,别按时间流逝重写。
    - 只记客观明文事实,不从言行推断性格、偏好、情绪或内心;不要把 persona 整份抄入。
    - 伤势痊愈、异常状态解除等需要清旧值时,对应字段写空字符串;无变化则不输出 protagonist。
 
@@ -1086,12 +1108,14 @@ export const THINKING_CHECKLIST = `【输出前思考】
 2c. NPC 盘点(对照【已登场NPC】名册)—— 门槛是用来挡路人的,不是让你偷懒
    - 先摆正心态:极严门槛只针对「要不要新建一个角色」,**绝不等于对已互动角色的变更可以视而不见**。漏记真正互动过的角色、该更新却不更新,和滥记路人一样都是错。下面两块必须逐项落实,别嫌麻烦跳过:
    ┃【新登场角色】本楼有谁**和 {{user}} 发生过直接、具体、有剧情意义的互动**(对话往来/冲突/交易/同行/情感),或是被剧情反复指涉的重要人物?
-     · 过了这条门槛、且写得出身份(title)→ **必须** npcs.add,别拿「宁可漏记」当借口把真正够格的角色也跳过(定点填 location 复用当前地名,随行同伴填 follow:true;正文写了其穿着/伤病就顺手记 outfit/condition 作基线)。
+     · 过了这条门槛、且写得出身份(title)→ **必须** npcs.add,别拿「宁可漏记」当借口把真正够格的角色也跳过(定点填 location 复用当前地名,随行同伴填 follow:true;正文写了其穿着/伤病就顺手记 outfit/condition 作基线;正文明确了年龄记 age 原话值,给得出称谓就填 relation「称谓,一句态度」)。
      · 排除(即便有名字):店小二、车夫、摊贩、路人、群演、报幕者、只做一次性服务或只露一面就消失的功能性角色 —— 这些才是门槛要挡的。
      · 写不出身份或拿不准 → 不记。
    ┃【已在册角色的变更】把名册**逐个过一遍**,凡本楼有变化的**必须** update —— 这是最容易被偷懒漏掉的一步:
      · 即时层(门槛低,重点盯):有人**换装/更衣/衣物被弄脏撕破血染** → update outfit;有人**受伤/中毒/疲惫/醉酒/伤愈** → update condition;有人**换了地点、加入或离开队伍** → update location 或 follow(follow:true 同行 / follow:false + location 离队留驻)。即时快照该变就变,别冻在初次记录那一刻。
      · 档案层(门槛高,少动):仅当身份/性格/**固定外貌**发生实质变化或首次补全才 update,普通对话不动。update 是整体覆盖,要写累积后的完整内容,别丢旧要点。
+     · 年龄:名册括注里**没有**年龄、而本楼正文明确提到 → update 补填原话值;已有年龄(带「记于X」)的一律别再写——系统按锚点自动推算,仅正文明确纠正/过生日才 update。
+     · 关系质变:某角色与主角的关系变了?先过证据关——只有**明确说出/双方明确约定/无歧义客观事件**(断绝、定情、结拜、成婚、相认)才 update relation;**吵架、冷战、赌气、亲密举动、送礼、短暂分离都不算质变**,relation 不动、事件写 summary。别把「吵了一架」写成「已决裂」,和好前也别写「已和好」。update 时称谓不动,只改态度半句。
      · 复用既有名字,不要换个叫法重记一遍;确实无任何变化的角色 → 不输出。
    - 主要角色盘点:有角色已成为**反复出场的核心主演**吗?→ important:true(只标真正主演,别滥标)。名册里 ★ 标记的,重点确认其 outfit/location/condition 是否要刷新。
    - 离场演变(仅限★主要角色):名册里某★主要角色与主角已分开**明显跨越时间**(数日/长旅程)后又出现或被提及?→ 可合理推演并 update 其 outfit/location/condition(多日多半已换装/已移动/伤已变化),避免「重逢还穿老样子」。**仅限主要角色这三个字段,不可外溢到正文/物品/配角。**

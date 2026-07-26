@@ -167,6 +167,18 @@ export interface MemNpc {
   name: string;
   /** 性别(档案层;短值,如「男」「女」。不受在场判定影响,所有分档都注入,防 AI 搞错性别) */
   gender?: string;
+  /**
+   * 年龄原文(记录时的值,如「25」「二十出头」)。**不随时间自动改写存储**:
+   * 配套 ageTime 锚点,注入/展示时由 ageDisplay 按当前故事时间推算(时间跳跃自动长岁),
+   * AI 忘不忘更新都不影响正确性。正文再次明确年龄(过生日/纠正)时覆盖,锚点随之刷新。
+   */
+  age?: string;
+  /** 年龄锚点:记录 age 时的故事内时间。AI 不填——重放时系统自动盖上该叶子的 timeEnd */
+  ageTime?: string;
+  /** 与主角的关系(覆盖型;引导格式「称谓,一句态度」,称谓在开头供不在场档截取) */
+  relation?: string;
+  /** 与其他角色的重要关系(档案层,高门槛;如「阿黛尔之父;与镇长有旧怨」) */
+  ties?: string;
   /** 身份/职业一句话(不在场时唯一保留的信息) */
   title?: string;
   /** 固定外貌:发色/身材/疤痕等长期不变的体貌(档案层,高门槛,几乎不更新) */
@@ -195,6 +207,10 @@ export interface MemNpc {
 export interface MemProtagonist {
   /** 性别/性别表现(正文明确时记录) */
   gender?: string;
+  /** 年龄原文(与 NPC 同机制:配 ageTime 锚点,展示/注入时按当前故事时间推算) */
+  age?: string;
+  /** 年龄锚点:记录 age 时的故事内时间,重放时系统自动盖 */
+  ageTime?: string;
   /** 当前身份、职业、种族或公开地位 */
   identity?: string;
   /** 当前稳定外貌/身体特征;永久变身、伤疤等变化后覆盖 */
@@ -395,6 +411,14 @@ export interface NpcDelta {
   name: string;
   /** 性别(档案层,短值;所有分档都注入) */
   gender?: string;
+  /** 年龄原文(首次明确/被纠正时才写;锚点 ageTime 由重放自动盖,AI 不填) */
+  age?: string;
+  /** 年龄锚点(仅手动 op / carryover 种子会带;AI 输出里没有这个字段) */
+  ageTime?: string;
+  /** 与主角的关系(覆盖型;称谓在开头) */
+  relation?: string;
+  /** 与其他角色的重要关系(档案层,高门槛) */
+  ties?: string;
   /** 身份/职业一句话 */
   title?: string;
   /** 固定外貌:长期不变的体貌(档案层) */
@@ -419,6 +443,10 @@ export interface NpcDelta {
  */
 export interface ProtagonistDelta {
   gender?: string;
+  /** 年龄原文(首次明确/纠正时才写;ageTime 锚点由重放自动盖) */
+  age?: string;
+  /** 年龄锚点(仅手动 op / carryover 会带) */
+  ageTime?: string;
   identity?: string;
   appearance?: string;
   outfit?: string;

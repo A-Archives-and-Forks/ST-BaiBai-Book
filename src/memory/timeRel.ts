@@ -371,3 +371,52 @@ export function relativeTimeLabel(eventTime?: string, nowTime?: string): string 
   if (remainMonths > 0 && years < 5) return `${years}年${remainMonths}个月后`;
   return `${years}年后`;
 }
+
+/* ============ 年龄推算(锚点制) ============ */
+
+/**
+ * 从年龄原文解析出可推算的数字(全串匹配,防「二十出头」「25%」误判)。
+ * 允许「约」前缀与「岁」后缀;其余写法(二十出头/年近三十…)视为模糊值,返回 null。
+ */
+function parseAgeNumber(raw: string): number | null {
+  const m = raw.trim().match(new RegExp(`^(?:约|大约)?\\s*(\\d{1,3}|${CN_NUM_CLASS}+)\\s*岁?$`));
+  if (!m) return null;
+  const n = cnNumToInt(m[1]);
+  return n != null && n > 0 && n < 1000 ? n : null;
+}
+
+/** 锚点时间的简短标注:能解析出年份 → 「(前缀)X年」;否则剥掉时刻后的原文;再不行空串。 */
+function anchorLabel(ageTime: string): string {
+  const d = parseStoryDate(ageTime);
+  if (d?.type === 'standard' && d.year != null) return `${d.calendarPrefix ?? ''}${d.year}年`;
+  return ageTime.trim();
+}
+
+/**
+ * 按「年龄锚点」推算当前显示年龄。年龄不是状态而是时间的函数:
+ * 存储永远是「记录时的原文 + 锚点时间」,显示时相对当前故事时间推算,
+ * 时间跳跃自动长岁,AI 忘不忘更新都不影响正确性。
+ *  - 锚点到现在不足一年(或缺锚点/缺当前时间)→ 原样返回原文。
+ *  - 跨了 N 年且原文是可解析数字 → 「约(N+原值)岁(锚点年时原值岁)」——不知生日,±1 岁误差,「约」是诚实的。
+ *  - 模糊年龄(二十出头)/ 架空历算不出 / 时间倒流 → 原文 + 锚点括注,把推算留给读者/主模型。
+ * 沿用「宁可不标,绝不标错」底线。age 空 → 空串。
+ */
+export function ageDisplay(age?: string, ageTime?: string, now?: string): string {
+  const raw = age?.trim();
+  if (!raw) return '';
+  const anchor = ageTime?.trim();
+  const cur = now?.trim();
+  if (!anchor || !cur) return raw;
+
+  const days = calculateRelativeDays(anchor, cur);
+  const num = parseAgeNumber(raw);
+  if (days != null && days >= 0 && days < 365) return raw; // 不足一年:原样
+  if (days != null && days >= 365 && num != null) {
+    const est = num + Math.floor(days / 365);
+    const label = anchorLabel(anchor);
+    return label ? `约${est}岁(${label}时${num}岁)` : `约${est}岁`;
+  }
+  // 算不出(架空跨月/时间倒流/模糊年龄跨年):原文 + 锚点括注,不猜
+  const label = anchorLabel(anchor);
+  return label ? `${raw}(${label}时)` : raw;
+}
