@@ -919,7 +919,11 @@ export function buildSummaryPrompt(a: BuildArgs): string {
   const prompt = fill(tpl, macros);
   if (!custom) return prompt;
   const supplements = [fill(PROTAGONIST_PROTOCOL_SUPPLEMENT, macros), RULE_ABSOLUTE_TIME_LANGUAGE];
-  if (!a.hasTimeTags) supplements.push(TIME_ANCHOR_PROTOCOL_SUPPLEMENT);
+  // {{time_rule}} 在无时间标签时本身已经带有完整时间协议;
+  // 只有自定义模板没有带入它时,才追加兼容协议,避免完整时间要求重复注入。
+  if (!a.hasTimeTags && !prompt.includes('【完整时间锚点格式(系统强制)】')) {
+    supplements.push(TIME_ANCHOR_PROTOCOL_SUPPLEMENT);
+  }
   return `${prompt}\n\n${supplements.join('\n\n')}`;
 }
 

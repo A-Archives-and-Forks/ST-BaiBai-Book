@@ -459,7 +459,13 @@ function fmtStoryTimeHead(storyTime: string, now: string): string {
  */
 function fmtChunk(h: RankedHit, body: string, bodyHasInlineTime: boolean, selfScope: string | null, now: string): string {
   const src = `[${sourceLabel(h, selfScope)}]`;
-  if (bodyHasInlineTime) return `${src} ${body}`;
+  if (bodyHasInlineTime) {
+    // 全文自身保留原始起止时间标签，但仍需在全文前补充相对时间，
+    // 避免全文档与摘要档在时间感知上表现不一致。
+    const end = splitTimeLabel((h.storyTime || '').trim()).end ?? '';
+    const rel = relativeTimeLabel(end, now);
+    return rel ? `${src}【${rel}】 ${body}` : `${src} ${body}`;
+  }
   const head = fmtStoryTimeHead(h.storyTime || '', now);
   return head ? `${src}${head}${body}` : `${src} ${body}`;
 }
