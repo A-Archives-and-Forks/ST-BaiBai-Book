@@ -3,6 +3,7 @@ import { getContext, setMessageText, type STMessage } from '@/st/context';
 import { fmtItemLogInline } from './prompts';
 import { memory, recomputeDerived, saveMemory, scheduleLeafFlush } from './store';
 import { readItemsTagText, writeItemLogTag, writeVarLogTag } from './timeTag';
+import { scheduleVectorIndex } from './vector';
 import { createEmptyMemory } from './types';
 import type { BaibaiMemory, ItemDelta, ItemLogEntry, JsonValue, LeafExtra, MemNpc, MemPlan, MemScene, MemSummary, NpcDelta, PlanResolveItem, ProtagonistDelta, SceneDelta, SceneOp, SceneReparent, StoredDelta, SummaryDelta, VarOp, VarTemplate, VarTier } from './types';
 
@@ -1880,6 +1881,7 @@ export function deleteLeafAt(index: number): boolean {
   recomputeDerived();
   pruneBrokenComps();
   scheduleLeafFlush();
+  scheduleVectorIndex(); // 叶子没了 → 对账删掉它的向量,免得被继续召回
   return true;
 }
 
@@ -1906,6 +1908,7 @@ export function editLeafAt(index: number, text: string, timeStart: string, timeE
   chat[index].extra = { ...(chat[index].extra ?? {}), bbs_leaf: leaf };
   recomputeDerived();
   scheduleLeafFlush();
+  scheduleVectorIndex(); // 正文变了 → docHash 变,防抖重 embed,召回及时用上新内容
   return true;
 }
 
@@ -1940,6 +1943,7 @@ export function editLeafFull(
   rewriteFloorTags(chat, index, delta);
   recomputeDerived();
   scheduleLeafFlush();
+  scheduleVectorIndex(); // 正文变了 → docHash 变,防抖重 embed
   return true;
 }
 
@@ -2096,6 +2100,7 @@ export function deleteSummarySubtrees(rootIds: string[]): DeleteSummarySubtreesR
 
   if (summaries > 0) saveMemory();
   if (leaves > 0) scheduleLeafFlush();
+  if (leaves > 0) scheduleVectorIndex();
   return { leaves, summaries, imported };
 }
 

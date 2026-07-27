@@ -398,8 +398,12 @@ async function doRebuildIndex() {
   vecIndexMsg.value = '';
   resetVectorStoreProbe(); // 重测后端,确保索引落到当前真实可用的 store
   try {
-    const n = await syncVectorIndex();
-    vecIndexMsg.value = n > 0 ? `已索引 ${n} 条新摘要。` : '没有需要新增的索引(已是最新)。';
+    const result = await syncVectorIndex();
+    const parts = [
+      result.embedded > 0 ? `重新生成 ${result.embedded} 条向量` : '',
+      result.payloadUpdated > 0 ? `更新 ${result.payloadUpdated} 条全文/时间` : '',
+    ].filter(Boolean);
+    vecIndexMsg.value = parts.length ? `已${parts.join('，')}。` : '没有需要更新的索引(已是最新)。';
   } catch (e) {
     vecIndexMsg.value = `索引失败:${e instanceof Error ? e.message : String(e)}`;
   } finally {

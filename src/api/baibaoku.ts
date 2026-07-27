@@ -12,12 +12,21 @@ const BASE_URL = '/api/plugins/baibaoku/v1';
 export interface VecItem {
   leafId: string;
   docHash: string;
+  payloadHash: string;
   vector: string;
   dim: number;
   document: string;
   mesFull?: string | null;
   storyTime?: string | null;
   msgIndex?: number | null;
+}
+
+/** 摘要向量未变时，仅更新全文和故事时间。 */
+export interface VecPayloadItem {
+  leafId: string;
+  payloadHash: string;
+  mesFull?: string | null;
+  storyTime?: string | null;
 }
 
 /** search 单条命中 */
@@ -76,6 +85,14 @@ export function vecUpsert(database: string, scope: string, items: VecItem[]): Pr
   return request('vec/upsert', { database, scope, items });
 }
 
+export function vecUpdatePayload(
+  database: string,
+  scope: string,
+  items: VecPayloadItem[],
+): Promise<{ updated: number }> {
+  return request('vec/update-payload', { database, scope, items });
+}
+
 export function vecSearch(
   database: string,
   scopes: string[],
@@ -103,8 +120,8 @@ export function vecClearScope(database: string, scope: string): Promise<{ delete
 export function vecReconcile(
   database: string,
   scope: string,
-  present: Array<{ leafId: string; docHash: string }>,
-): Promise<{ deleted: number; missing: string[] }> {
+  present: Array<{ leafId: string; docHash: string; payloadHash: string }>,
+): Promise<{ deleted: number; missing: string[]; stalePayload: string[] }> {
   return request('vec/reconcile', { database, scope, present });
 }
 

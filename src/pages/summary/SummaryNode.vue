@@ -45,12 +45,13 @@ const isChild = computed(() => props.depth > 0);
             <span class="bbs-summary-loc">{{ ctx.floorLabel(row) }}</span>
             <span v-if="ctx.rowTime(row)" class="bbs-summary-dateline">{{ ctx.rowTime(row) }}</span>
           </template>
-          <!-- 操作键:仅根行(展开出的子行只读,避免误删祖先链) -->
-          <span v-if="!isChild" class="bbs-summary-acts">
+          <!-- 操作键:编辑对任何层级开放(结构安全:不改 id、不断链;叶子改完向量索引自动重 embed,
+               总结不进向量库、只影响上下文注入);删除仅根行——删深层叶子会级联删整条祖先总结链 -->
+          <span class="bbs-summary-acts">
             <button class="bbs-summary-act" type="button" :title="row.imported ? '编辑导入历史' : row.kind === 'comp' ? '编辑总结' : '编辑摘要'" @click="ctx.openEdit(row)">
               <Icon name="edit" />
             </button>
-            <button class="bbs-summary-act bbs-summary-del" type="button" :title="row.imported ? '删除导入历史' : row.kind === 'comp' ? '删除总结(下层会展开)' : '删除摘要'" @click="ctx.onDelete(row)">
+            <button v-if="!isChild" class="bbs-summary-act bbs-summary-del" type="button" :title="row.imported ? '删除导入历史' : row.kind === 'comp' ? '删除总结(下层会展开)' : '删除摘要'" @click="ctx.onDelete(row)">
               <Icon name="trash" />
             </button>
           </span>

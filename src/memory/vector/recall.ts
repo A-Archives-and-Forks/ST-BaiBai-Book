@@ -27,6 +27,7 @@ import { isAiFloor, resolveKeepStart } from '../engine';
 import { cleanBody, compactTimeLabel, latestStoryTime, splitTimeLabel } from '../timeTag';
 import { relativeTimeLabel } from '../timeRel';
 import { normalizeRecallInjectionDepth } from './depth';
+import { RECALL_CACHE_STORAGE_KEY } from './cache';
 import {
   previewOf,
   resetRecallDebug,
@@ -128,8 +129,6 @@ interface RecallCache {
 // 跨天/跨标签的残留无副作用:key 已含 chatId+楼层+内容哈希+参数指纹,对不上只会重算,绝不误命中。
 // (不违反「设置别用 localStorage」那条——那是设置要跨设备同步必走服务器;召回缓存是本机临时结果,无需同步。)
 // 失败全静默(隐私模式/配额满):退化为无缓存,绝不影响召回主流程。
-const RECALL_CACHE_STORAGE_KEY = 'bbs_vec_recall_cache';
-
 function loadRecallCache(): RecallCache | null {
   try {
     const raw = localStorage.getItem(RECALL_CACHE_STORAGE_KEY);

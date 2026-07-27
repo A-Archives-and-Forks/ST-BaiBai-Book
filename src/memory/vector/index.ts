@@ -2,9 +2,9 @@
  * 向量索引编排:把当前聊天的有效叶子同步进后端向量库(该角色的 chat:<chatId> scope)。
  *
  * 流程(增量、幂等):
- *  1. 扫 chat 收集有效叶子 → present = [{leafId, docHash}](docHash 按叶子摘要文本算)。
- *  2. vec/reconcile:后端删掉陈旧(重摘换 id/删楼/编辑失效),返回需 embed 的 leafId(新增或 hash 变了)。
- *  3. 对缺失叶子 embed 其摘要文本 → vec/upsert。
+ *  1. 扫 chat 收集有效叶子 → present = [{leafId, docHash, payloadHash}]。
+ *  2. vec/reconcile:后端删掉陈旧，并区分摘要变化与「仅全文/时间变化」。
+ *  3. 摘要变化才重新 embed+upsert；仅全文/时间变化走轻量 payload 更新。
  * 同文本(同 hash)不重复 embed —— 这是「边玩边索引」不卡的关键。
  *
  * 调用时机:叶子生成/编辑/删除后(防抖触发,见 schedule)。全程 try/catch 静默,
@@ -13,15 +13,15 @@
 
 import { getContext, type STMessage } from '@/st/context';
 import { apiSettings, engineActiveHere } from '@/api/settings';
-import type { VecItem } from '@/api/baibaoku';
-import { resetVectorStoreProbe, vecClearScope, vecReconcile, vecUpsert } from './store';
+import type { VecItem, VecPayloadItem } from '@/api/baibaoku';
+import { resetVectorStoreProbe, vecClearScope, vecReconcile, vecUpdatePayload, vecUpsert } from './store';
 import { getLeaf, leafValid } from '../apply';
 import { memory } from '../store';
-import { resolveKeepStart } from '../engine';
 import { stripThinkBlocks } from '../timeTag';
 import type { LeafExtra } from '../types';
 import { embedTexts, encodeFloat32Base64 } from './embed';
 import { currentChatId, currentVectorDb } from './scope';
+import { invalidateRecallCache } from './cache';
 
 /** 轻量稳定 hash(FNV-1a,16 进制);叶子摘要文本变了 hash 即变,触发重 embed。 */
 function docHashOf(text: string): string {
@@ -33,9 +33,15 @@ function docHashOf(text: string): string {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
+/** 全文与故事时间的版本指纹；二者变化只刷新 payload，不重新生成摘要向量。 */
+function payloadHashOf(mesFull: string, storyTime: string): string {
+  return docHashOf(JSON.stringify([mesFull, storyTime]));
+}
+
 interface LeafForIndex {
   leafId: string;
   docHash: string;
+  payloadHash: string;
   document: string; // 叶子摘要文本(向量化对象 + 摘要档回传)
   mesFull: string; // 楼层原文(全文档回传)
   storyTime: string;
@@ -81,21 +87,31 @@ function collectLeaves(chat: STMessage[]): LeafForIndex[] {
     if (leaf.seed || seeds.has(leaf.id)) continue; // 种子叶子:承载整段总结,不进向量库(见 LeafExtra.seed)
     const document = (leaf.text ?? '').trim();
     if (!document) continue; // 空摘要不索引
+    const mesFull = stripThinkBlocks(chat[i].mes);
+    const storyTime = leafStoryTime(leaf);
     out.push({
       leafId: leaf.id,
       docHash: docHashOf(document),
+      payloadHash: payloadHashOf(mesFull, storyTime),
       document,
       // 存近乎原文:只预剥思维链(确定性噪声,省空间且零风险),其余清洗(自定义标签等)
       // 留到召回时过 cleanBody——这样用户日后调整「自定义清洗标签」设置,老索引也即时生效,无需重建。
-      mesFull: stripThinkBlocks(chat[i].mes),
-      storyTime: leafStoryTime(leaf),
+      mesFull,
+      storyTime,
       msgIndex: i,
     });
   }
   return out;
 }
 
-let indexing = false;
+export interface VectorSyncResult {
+  embedded: number;
+  payloadUpdated: number;
+}
+
+let indexingPromise: Promise<VectorSyncResult> | null = null;
+let indexingKey = '';
+let mutationRevision = 0;
 let timer: ReturnType<typeof setTimeout> | null = null;
 
 /** 向量记忆是否在当前聊天可索引(总开关开 + 当前角色未排除 + 向量开关开 + 进入了单角色聊天)。 */
@@ -107,37 +123,65 @@ export function vectorIndexableHere(): boolean {
 
 /**
  * 把当前聊天的叶子同步进向量库(增量)。可被防抖 schedule 或手动「重建索引」直接调用。
- * @returns 实际 embed+upsert 的条数(0 = 全是增量命中或无可索引)。
+ * @returns 本轮重新生成向量与仅更新附属数据的条数。
  */
-export async function syncVectorIndex(signal?: AbortSignal): Promise<number> {
-  if (!vectorIndexableHere()) return 0;
-  if (indexing) return 0;
+export async function syncVectorIndex(signal?: AbortSignal): Promise<VectorSyncResult> {
+  if (!vectorIndexableHere()) return { embedded: 0, payloadUpdated: 0 };
   const database = currentVectorDb();
   const chatId = currentChatId();
-  if (!database || !chatId) return 0;
-
-  const ctx = getContext();
-  const chat = ctx?.chat ?? [];
+  if (!database || !chatId) return { embedded: 0, payloadUpdated: 0 };
   const scope = `chat:${chatId}`;
-
-  indexing = true;
-  try {
-    const leaves = collectLeaves(chat);
-    const present = leaves.map(l => ({ leafId: l.leafId, docHash: l.docHash }));
-
-    // reconcile:删陈旧、得出需 embed 的 leafId。空 present 也要发(可能要清掉删光的旧索引)。
-    const { missing } = await vecReconcile(database, scope, present);
-    if (!missing.length) return 0;
-
-    const missingSet = new Set(missing);
-    const todo = leaves.filter(l => missingSet.has(l.leafId));
-    return await embedAndUpsert(database, scope, todo, signal);
-  } catch (e) {
-    console.warn('[柏宝书向量] 索引同步失败(不影响摘要):', e);
-    return 0;
-  } finally {
-    indexing = false;
+  const taskKey = `${database}\0${scope}`;
+  if (indexingPromise) {
+    if (indexingKey === taskKey) return indexingPromise;
+    // 上一聊天正在收尾时先等它结束，再按新聊天重新取上下文，绝不把新叶子写进旧 scope。
+    await indexingPromise;
+    return syncVectorIndex(signal);
   }
+
+  const run = async (): Promise<VectorSyncResult> => {
+    const total: VectorSyncResult = { embedded: 0, payloadUpdated: 0 };
+    try {
+      let passRevision: number;
+      do {
+        passRevision = mutationRevision;
+        if (currentVectorDb() !== database || currentChatId() !== chatId) break;
+        const leaves = collectLeaves(getContext()?.chat ?? []);
+        const present = leaves.map(l => ({
+          leafId: l.leafId,
+          docHash: l.docHash,
+          payloadHash: l.payloadHash,
+        }));
+
+        // 摘要变化走 embed+upsert；仅全文/时间变化走轻量 payload 更新。
+        const { missing, stalePayload = [] } = await vecReconcile(database, scope, present);
+        const missingSet = new Set(missing);
+        const staleSet = new Set(stalePayload);
+        total.embedded += await embedAndUpsert(
+          database,
+          scope,
+          leaves.filter(l => missingSet.has(l.leafId)),
+          signal,
+        );
+        total.payloadUpdated += await updatePayload(
+          database,
+          scope,
+          leaves.filter(l => staleSet.has(l.leafId)),
+        );
+        // 索引运行期间又发生编辑时，再扫一轮，避免 single-flight 吞掉新变化。
+      } while (passRevision !== mutationRevision);
+    } catch (e) {
+      console.warn('[柏宝书向量] 索引同步失败(不影响摘要):', e);
+    }
+    return total;
+  };
+
+  indexingKey = taskKey;
+  indexingPromise = run().finally(() => {
+    indexingPromise = null;
+    indexingKey = '';
+  });
+  return indexingPromise;
 }
 
 /** embed 一批叶子并 upsert 到指定 scope;返回实际写入条数。embedTexts 内部按 64 分批。 */
@@ -149,6 +193,7 @@ async function embedAndUpsert(database: string, scope: string, todo: LeafForInde
     return {
       leafId: l.leafId,
       docHash: l.docHash,
+      payloadHash: l.payloadHash,
       vector: encodeFloat32Base64(vec),
       dim: vec.length,
       document: l.document,
@@ -161,43 +206,26 @@ async function embedAndUpsert(database: string, scope: string, todo: LeafForInde
   return items.length;
 }
 
+/** 摘要未变时只更新全文和时间，不调用 embedding。 */
+async function updatePayload(database: string, scope: string, todo: LeafForIndex[]): Promise<number> {
+  if (!todo.length) return 0;
+  const items: VecPayloadItem[] = todo.map(l => ({
+    leafId: l.leafId,
+    payloadHash: l.payloadHash,
+    mesFull: l.mesFull,
+    storyTime: l.storyTime,
+  }));
+  const { updated } = await vecUpdatePayload(database, scope, items);
+  return updated;
+}
+
 /**
- * 召回前的「补齐窗口外缺失索引」:确保滑动窗口**之前**的叶子都已索引,才放行召回。
- *
- * 为何只补窗口外:窗口内的叶子召回本就排除(避免与全文重复),它们的索引留给防抖增量即可,
- * 不必阻塞生成;而窗口外的旧叶子是召回的真正目标,缺索引会直接漏召回——必须先补。
- *
- * 复用 reconcile 全量对账(同时清陈旧、得 missing),但只对「窗口外 missing」阻塞 embed。
- * 全程 try/catch 静默:补建失败不阻断召回(召回侧自有降级),更不影响生成。
+ * 召回前补齐索引并刷新过期 payload。与后台索引共用 single-flight；
+ * 运行期间发生的新编辑会在当前任务结束前自动补跑。
  */
 export async function ensureRecallIndex(signal?: AbortSignal): Promise<void> {
   if (!vectorIndexableHere()) return;
-  if (indexing) return; // 正在跑防抖同步,让它去做,避免重复 embed
-  const database = currentVectorDb();
-  const chatId = currentChatId();
-  if (!database || !chatId) return;
-
-  const ctx = getContext();
-  const chat = ctx?.chat ?? [];
-  const scope = `chat:${chatId}`;
-
-  indexing = true;
-  try {
-    const leaves = collectLeaves(chat);
-    const present = leaves.map(l => ({ leafId: l.leafId, docHash: l.docHash }));
-    const { missing } = await vecReconcile(database, scope, present);
-    if (!missing.length) return;
-
-    // 只阻塞补窗口外(< keepStart)缺失的叶子;窗口内缺失交给防抖增量
-    const keepStart = resolveKeepStart(chat);
-    const missingSet = new Set(missing);
-    const todo = leaves.filter(l => missingSet.has(l.leafId) && l.msgIndex < keepStart);
-    if (todo.length) await embedAndUpsert(database, scope, todo, signal);
-  } catch (e) {
-    console.warn('[柏宝书向量] 召回前补建索引失败(降级为不补):', e);
-  } finally {
-    indexing = false;
-  }
+  await syncVectorIndex(signal);
 }
 
 /**
@@ -210,6 +238,7 @@ export async function clearVectorIndex(): Promise<number> {
   const database = currentVectorDb();
   const chatId = currentChatId();
   if (!database || !chatId) return 0;
+  invalidateRecallCache();
   resetVectorStoreProbe(); // 手动维护前重测后端,后端刚就绪/刚停都能切到对的 store
   const { deleted } = await vecClearScope(database, `chat:${chatId}`);
   return deleted;
@@ -217,8 +246,13 @@ export async function clearVectorIndex(): Promise<number> {
 
 /** 防抖触发索引同步:叶子生成/编辑/删除后调用,合并连续变动为一次。 */
 export function scheduleVectorIndex(): void {
-  if (!vectorIndexableHere()) return;
+  mutationRevision++;
+  invalidateRecallCache();
   if (timer) clearTimeout(timer);
+  if (!vectorIndexableHere()) {
+    timer = null;
+    return;
+  }
   timer = setTimeout(() => {
     timer = null;
     void syncVectorIndex();

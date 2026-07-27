@@ -1744,12 +1744,13 @@ export async function resummarizeNow(): Promise<number> {
  */
 let reactTimer: ReturnType<typeof setTimeout> | null = null;
 function reactToChatMutation(syncHidden = false): void {
+  // 缓存立即失效、索引另行防抖；UI/派生重算仍按下方 200ms 合并。
+  scheduleVectorIndex();
   if (reactTimer) clearTimeout(reactTimer);
   reactTimer = setTimeout(() => {
     reactTimer = null;
     pruneBrokenComps(); // 叶子失效 → 删包含它的整条祖先压缩链
     recomputeDerived(); // 删叶/陈旧 → 物品/计划回退;UI(derivedMeta)更新
-    scheduleVectorIndex(); // 删楼/编辑/翻页 → 防抖对账向量库(删陈旧、补新)
     if (syncHidden && engineActiveHere() && apiSettings.autoSummaryEnabled) {
       void syncWindowHiddenState(getContext()?.chat ?? [])
         .catch(e => {

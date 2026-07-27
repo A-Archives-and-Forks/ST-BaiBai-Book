@@ -707,11 +707,18 @@ async function onDelete(r: SummaryRow) {
 }
 
 /* ============ 编辑弹窗 ============
- * 叶子:可改「故事内时间」+ 正文;总结:只压文本,故只改正文。 */
+ * 叶子:可改「故事内时间」+ 正文;总结:只压文本,故只改正文。
+ * nested = 该节点已被某条总结收纳:编辑它不影响上层总结文本(总结只压快照),
+ * 弹窗里提示用户「上层总结不会跟着变」,免得改完发现总结里旧信息还在、以为没保存上。 */
 type Editing =
-  | { kind: 'leaf'; msgIndex: number; text: string; timeStart: string; timeEnd: string }
-  | { kind: 'comp'; compId: string; level: number; text: string; imported: boolean };
+  | { kind: 'leaf'; msgIndex: number; text: string; timeStart: string; timeEnd: string; nested: boolean }
+  | { kind: 'comp'; compId: string; level: number; text: string; imported: boolean; nested: boolean };
 const editing = ref<Editing | null>(null);
+
+/** 该 id 是否已被任何总结的 childIds 收纳(= 展开视图里的深层行) */
+function isNested(id: string): boolean {
+  return memory.summaries.some(s => (s.childIds ?? []).includes(id));
+}
 
 function openEdit(r: SummaryRow) {
   if (r.kind === 'leaf' && typeof r.msgIndex === 'number') {
@@ -723,9 +730,10 @@ function openEdit(r: SummaryRow) {
       text: r.text,
       timeStart: r.timeStart ?? fb.start ?? '',
       timeEnd: r.timeEnd ?? fb.end ?? '',
+      nested: isNested(r.id),
     };
   } else if (r.kind === 'comp') {
-    editing.value = { kind: 'comp', compId: r.id, level: r.level, text: r.text, imported: r.imported === true };
+    editing.value = { kind: 'comp', compId: r.id, level: r.level, text: r.text, imported: r.imported === true, nested: isNested(r.id) };
   }
 }
 function cancelEdit() {
@@ -1010,8 +1018,9 @@ provide(SUMMARY_CTX, {
               <span v-if="rowTime(r)" class="bbs-summary-dateline">{{ rowTime(r) }}</span>
             </template>
             <span v-if="r.stale" class="bbs-summary-stale">待更新</span>
-            <!-- 操作键:搜索命中的根行(已压缩深层节点只读,不误删祖先链;选择模式无操作) -->
-            <span v-if="!selectMode && !r.isChild" class="bbs-summary-acts">
+            <!-- 操作键:编辑对任何命中行开放(结构安全;叶子改完向量自动重 embed,总结不进向量库);
+                 删除仅根行(删深层会级联删祖先总结链);选择模式无操作 -->
+            <span v-if="!selectMode" class="bbs-summary-acts">
               <button
                 class="bbs-summary-act"
                 type="button"
@@ -1021,6 +1030,7 @@ provide(SUMMARY_CTX, {
                 <Icon name="edit" />
               </button>
               <button
+                v-if="!r.isChild"
                 class="bbs-summary-act bbs-summary-del"
                 type="button"
                 :title="r.imported ? '删除导入历史' : r.kind === 'comp' ? '删除总结(下层会展开)' : '删除摘要'"
@@ -1239,6 +1249,12 @@ provide(SUMMARY_CTX, {
           </span>
           <button class="bbs-summary-act" type="button" title="关闭" @click="cancelEdit"><Icon name="close" /></button>
         </header>
+        <!-- 已被总结收纳的节点:提醒上层总结不会跟着变。叶子才提向量召回(总结不进向量库) -->
+        <p v-if="editing.nested" class="bbs-field-hint bbs-nested-hint">
+          {{ editing.kind === 'leaf'
+            ? '这条已被上层总结收纳:改动会用于向量召回,但上层总结的文本不会自动更新;若总结里也有同样的错误,请一并编辑。'
+            : '这条已被更上层总结收纳:改动不会同步到上层总结;若上层里也有同样的错误,请一并编辑。' }}
+        </p>
         <!-- 时间仅叶子可编辑(起止两端);总结只压文本,无时间字段 -->
         <div v-if="editing.kind === 'leaf'" class="bbs-modal-field bbs-time-pair">
           <label class="bbs-time-col">
@@ -1286,6 +1302,11 @@ provide(SUMMARY_CTX, {
   margin-bottom: 14px;
 }
 .bbs-import-warning {
+  color: var(--bbs-warning);
+}
+/* 编辑已被总结收纳的节点时的提醒 */
+.bbs-nested-hint {
+  margin-bottom: 14px;
   color: var(--bbs-warning);
 }
 /* .bbs-section-head / .bbs-add-mini 已提升为 base.css 全局原子(摘要、场景共用) */

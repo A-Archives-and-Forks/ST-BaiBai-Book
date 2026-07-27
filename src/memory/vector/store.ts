@@ -17,11 +17,13 @@
 import {
   isBaiBaoKuAvailable,
   vecUpsert as vecUpsertBackend,
+  vecUpdatePayload as vecUpdatePayloadBackend,
   vecSearch as vecSearchBackend,
   vecReconcile as vecReconcileBackend,
   vecClearScope as vecClearScopeBackend,
   vecStats as vecStatsBackend,
   type VecItem,
+  type VecPayloadItem,
   type VecHit,
 } from '@/api/baibaoku';
 import { decodeFloat32Base64 } from './embed';
@@ -32,12 +34,13 @@ type SearchOpts = { topK?: number; excludeLeafIds?: string[] };
 export interface VectorStore {
   kind: 'backend' | 'local';
   upsert(database: string, scope: string, items: VecItem[]): Promise<{ upserted: number }>;
+  updatePayload(database: string, scope: string, items: VecPayloadItem[]): Promise<{ updated: number }>;
   search(database: string, scopes: string[], queryVectors: string[], opts?: SearchOpts): Promise<{ results: VecHit[] }>;
   reconcile(
     database: string,
     scope: string,
-    present: Array<{ leafId: string; docHash: string }>,
-  ): Promise<{ deleted: number; missing: string[] }>;
+    present: Array<{ leafId: string; docHash: string; payloadHash: string }>,
+  ): Promise<{ deleted: number; missing: string[]; stalePayload: string[] }>;
   clearScope(database: string, scope: string): Promise<{ deleted: number }>;
   stats(database: string, scopes: string[]): Promise<{ stats: Record<string, number> }>;
 }
@@ -47,6 +50,7 @@ export interface VectorStore {
 const backendStore: VectorStore = {
   kind: 'backend',
   upsert: vecUpsertBackend,
+  updatePayload: vecUpdatePayloadBackend,
   search: (db, scopes, qv, opts = {}) => vecSearchBackend(db, scopes, qv, opts),
   reconcile: vecReconcileBackend,
   clearScope: vecClearScopeBackend,
@@ -99,6 +103,7 @@ interface LocalRecord {
   scope: string;
   leafId: string;
   docHash: string;
+  payloadHash?: string;
   vector: Float32Array;
   dim: number;
   document: string;
@@ -156,6 +161,7 @@ const localStore: VectorStore = {
         scope,
         leafId: it.leafId,
         docHash: it.docHash,
+        payloadHash: it.payloadHash,
         vector: decodeFloat32Base64(it.vector),
         dim: it.dim,
         document: it.document,
@@ -167,6 +173,27 @@ const localStore: VectorStore = {
     }
     await txDone(tx);
     return { upserted: items.length };
+  },
+
+  async updatePayload(database, scope, items) {
+    if (!items.length) return { updated: 0 };
+    const rows = await getScopeRows(database, scope);
+    const byId = new Map(rows.map(row => [row.leafId, row]));
+    const db = await openDb();
+    const tx = db.transaction(STORE, 'readwrite');
+    const os = tx.objectStore(STORE);
+    let updated = 0;
+    for (const it of items) {
+      const rec = byId.get(it.leafId);
+      if (!rec) continue;
+      rec.payloadHash = it.payloadHash;
+      rec.mesFull = it.mesFull ?? null;
+      rec.storyTime = it.storyTime ?? null;
+      os.put(rec);
+      updated++;
+    }
+    await txDone(tx);
+    return { updated };
   },
 
   // max 融合:每个叶子取它在各 query 上的最高余弦,跨 scope 同叶子合并留最高分。
@@ -195,7 +222,9 @@ const localStore: VectorStore = {
         }
         const key = String(r.leafId);
         const prev = fused.get(key);
-        if (!prev || best > prev.bestSim) fused.set(key, { row: r, bestSim: best, bestQuery: bestQ });
+        if (!prev || best > prev.bestSim || (best === prev.bestSim && r.scope === scopes[0] && prev.row.scope !== scopes[0])) {
+          fused.set(key, { row: r, bestSim: best, bestQuery: bestQ });
+        }
       }
     }
 
@@ -217,16 +246,24 @@ const localStore: VectorStore = {
   // 删 scope 下不在 present 的陈旧叶子;返回后端没有 / hash 变了的 leafId(需重 embed)。
   async reconcile(database, scope, present) {
     const rows = await getScopeRows(database, scope);
-    const presentMap = new Map(present.map(p => [String(p.leafId), String(p.docHash ?? '')]));
-    const existing = new Map(rows.map(r => [String(r.leafId), String(r.docHash)]));
+    const presentMap = new Map(present.map(p => [String(p.leafId), {
+      docHash: String(p.docHash ?? ''),
+      payloadHash: String(p.payloadHash ?? ''),
+    }]));
+    const existing = new Map(rows.map(r => [String(r.leafId), {
+      docHash: String(r.docHash),
+      payloadHash: String(r.payloadHash ?? ''),
+    }]));
 
     const toDelete: string[] = [];
     for (const id of existing.keys()) if (!presentMap.has(id)) toDelete.push(id);
 
     const missing: string[] = [];
-    for (const [id, hash] of presentMap) {
+    const stalePayload: string[] = [];
+    for (const [id, hashes] of presentMap) {
       const cur = existing.get(id);
-      if (cur === undefined || cur !== hash) missing.push(id);
+      if (cur === undefined || cur.docHash !== hashes.docHash) missing.push(id);
+      else if (cur.payloadHash !== hashes.payloadHash) stalePayload.push(id);
     }
 
     if (toDelete.length) {
@@ -236,7 +273,7 @@ const localStore: VectorStore = {
       for (const id of toDelete) os.delete([database, scope, id]);
       await txDone(tx);
     }
-    return { deleted: toDelete.length, missing };
+    return { deleted: toDelete.length, missing, stalePayload };
   },
 
   async clearScope(database, scope) {
@@ -299,6 +336,14 @@ export async function vecUpsert(database: string, scope: string, items: VecItem[
   return (await getVectorStore()).upsert(database, scope, items);
 }
 
+export async function vecUpdatePayload(
+  database: string,
+  scope: string,
+  items: VecPayloadItem[],
+): Promise<{ updated: number }> {
+  return (await getVectorStore()).updatePayload(database, scope, items);
+}
+
 export async function vecSearch(
   database: string,
   scopes: string[],
@@ -311,8 +356,8 @@ export async function vecSearch(
 export async function vecReconcile(
   database: string,
   scope: string,
-  present: Array<{ leafId: string; docHash: string }>,
-): Promise<{ deleted: number; missing: string[] }> {
+  present: Array<{ leafId: string; docHash: string; payloadHash: string }>,
+): Promise<{ deleted: number; missing: string[]; stalePayload: string[] }> {
   return (await getVectorStore()).reconcile(database, scope, present);
 }
 
