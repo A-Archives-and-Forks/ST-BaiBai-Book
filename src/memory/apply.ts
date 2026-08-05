@@ -1,6 +1,7 @@
 import { apiSettings } from '@/api/settings';
 import { getContext, setMessageText, type STMessage } from '@/st/context';
 import { fmtItemLogInline } from './prompts';
+import { mergeProtagonistDelta } from './protagonist';
 import { memory, recomputeDerived, saveMemory, scheduleLeafFlush } from './store';
 import { readItemsTagText, writeItemLogTag, writeVarLogTag } from './timeTag';
 import { scheduleVectorIndex } from './vector';
@@ -1552,7 +1553,7 @@ export function appendOpToLatestLeaf(op: StoredDelta): boolean {
   const d: StoredDelta = (leaf.delta ??= {});
 
   if (op.protagonist) {
-    d.protagonist = { ...(d.protagonist ?? {}), ...op.protagonist };
+    d.protagonist = mergeProtagonistDelta(d.protagonist, op.protagonist);
   }
   if (op.items) {
     // 关键:同名物品在 add/update 与 remove 之间必须互斥(跨桶抵消),否则改名(remove旧+add新)

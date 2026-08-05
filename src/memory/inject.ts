@@ -15,6 +15,7 @@ import type { STMessage } from '@/st/context';
 import { getContext } from '@/st/context';
 import { buildSceneLocationIndex, classifyNpcPresence, findCurrentSceneId, getLeaf, itemReachableAtScene, leafValid } from './apply';
 import { fmtItems, fmtPlans, fmtResolvedPlans, renderVarsState, selectRecentResolvedPlans, MEMORY_BRIEFING_NOTE, MEMORY_BRIEFING_END } from './prompts';
+import { fmtNpcTiesContext } from './npcRelations';
 import { memory } from './store';
 import { compactTimeLabel, formatRange, latestStoryTime, splitTimeLabel, timeTagPrompt } from './timeTag';
 import { relativeTimeLabel, weekdayLabel, ageDisplay } from './timeRel';
@@ -378,7 +379,8 @@ function relationHead(relation: string | undefined): string {
 /**
  * 渲染 NPC 名册注入块(分四档省 token):
  *  - **主要角色**(important):永远全量置顶,**突出即时状态面板**(着装/状态/所在),身份/性格/外貌从简。
- *  - 在场(随行 / 所在地=主角当前节点)→ 全量:名 + 性别 + 年龄 + 身份 + 关系 + 性格 + 外貌 + 人际 + 即时状态。
+ *  - 与其他角色的长期关系(ties)独立全局输出一次，不受以下在场分档影响。
+ *  - 在场(随行 / 所在地=主角当前节点)→ 全量:名 + 性别 + 年龄 + 身份 + 关系 + 性格 + 外貌 + 即时状态。
  *  - **同区域**(抬头最多一级就与主角共处)→ 轻量:名 + 性别 + 年龄 + 身份 + 关系 + 性格 + 所在地。留个性格,免得 AI
  *    临时拉其出场时凭空 OOC;但砍掉外貌/即时状态这俩大头,人多时省得多。
  *  - 不在场(更上级祖先/更远旁支)→ 只发 名 + 性别 + 关系称谓 + 身份(title)。
@@ -401,6 +403,8 @@ function fmtNpcContext(npcs: MemNpc[], scenes: MemScene[], here: string, locatio
   const age = (n: MemNpc): string => oneLine(ageDisplay(n.age, n.ageTime, now));
 
   const lines: string[] = [];
+  const ties = fmtNpcTiesContext(npcs);
+  if (ties) lines.push(ties);
   if (main.length) {
     // 主要角色:状态面板优先。身份/关系留一句帮定位,外貌/性格从简(卡里通常已有),重点是即时状态。
     const detailed = main
@@ -423,7 +427,6 @@ function fmtNpcContext(npcs: MemNpc[], scenes: MemScene[], here: string, locatio
         if (oneLine(n.relation)) profile.push(`与主角:${oneLine(n.relation)}`);
         if (oneLine(n.personality)) profile.push(`性格:${oneLine(n.personality)}`);
         if (oneLine(n.desc)) profile.push(oneLine(n.desc));
-        if (oneLine(n.ties)) profile.push(`人际:${oneLine(n.ties)}`);
         const profileStr = profile.length ? ` —— ${profile.join(';')}` : '';
         const place = n.follow ? ' [随行]' : '';
         return `  - ${parts.join('')}${place}${profileStr}${npcStateTail(n, false)}`;
