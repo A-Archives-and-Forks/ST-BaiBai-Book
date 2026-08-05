@@ -1,15 +1,16 @@
 {
   "name": "st-baibai-book",
-  "version": "1.1.8",
+  "version": "1.1.9",
   "private": true,
   "type": "module",
   "scripts": {
     "sync-version": "node scripts/sync-version.mjs",
     "prebuild": "node scripts/sync-version.mjs",
     "build": "vite build",
-    "test": "node scripts/test-time-rel.mjs && node scripts/test-vector-depth.mjs",
+    "test": "node scripts/test-time-rel.mjs && node scripts/test-vector-depth.mjs && node scripts/test-memory-regressions.mjs",
     "test:time": "node scripts/test-time-rel.mjs",
     "test:vector-depth": "node scripts/test-vector-depth.mjs",
+    "test:memory": "node scripts/test-memory-regressions.mjs",
     "prewatch": "node scripts/sync-version.mjs",
     "watch": "vite build --watch --mode development"
   },

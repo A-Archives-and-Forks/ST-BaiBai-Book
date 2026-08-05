@@ -15,6 +15,7 @@
  */
 
 import { apiSettings, type Verbosity } from '@/api/settings';
+import { fmtNpcSummaryList } from './npcRelations';
 import { RULE_COMPLETE_TIME_ANCHOR } from './timeTag';
 import type { ItemLogEntry, JsonValue, MemPlan, MemProtagonist, PlanOutcome } from './types';
 
@@ -602,7 +603,7 @@ interface BuildArgs {
   /** 已知地点(完整路径 + 描述,供 AI 复用命名、防重复记录、判断 reparent) */
   scenes: { path: string[]; desc?: string }[];
   /** 已登场 NPC(供 AI 复用命名、防重复记录、判断状态更新) */
-  npcs: { name: string; gender?: string; age?: string; ageTime?: string; relation?: string; title?: string; important?: boolean; outfit?: string; condition?: string; follow?: boolean; location?: string }[];
+  npcs: { name: string; gender?: string; age?: string; ageTime?: string; relation?: string; ties?: string; title?: string; important?: boolean; outfit?: string; condition?: string; follow?: boolean; location?: string }[];
   /** 未了结计划(顺序即编号 p1..pn);createdTime/targetTime 为故事内时间(可空) */
   openPlans: { kind: 'plan' | 'suspense'; content: string; createdTime?: string; targetTime?: string }[];
   /** 近期已完成的计划/悬念(已按 resolvedAt 倒序取好最近 N 条);防副模型重复记录。空数组→渲染「(无)」 */
@@ -683,33 +684,13 @@ export function fmtScenes(scenes: BuildArgs['scenes']): string {
 /**
  * 已登场 NPC 名册:供 AI 复用命名、避免重复记录、判断更新/退场/状态演变。
  * 每条显示 名 + 性别 + 年龄(带记录时点,示意「已记过、勿重复」)+ ★主要 + [随行/所在地] + 身份
- * + 与主角关系 + 当前即时状态(着装/状态)。
+ * + 与主角关系 + 与其他角色的长期关系 + 当前即时状态(着装/状态)。
  * 性别在所有分档都发(包括不在场),防 AI 搞错性别;即时状态进名册是有意为之:
  * AI 要据此判断「是否该更新着装」「离场的主要角色该不该推演演变」。
  * 性格/外貌仍不进(够识别复用即可,省 token)。空则「(无)」。
  */
 export function fmtNpcs(npcs: BuildArgs['npcs']): string {
-  if (!npcs.length) return '  (无)';
-  return npcs
-    .map(n => {
-      const star = n.important ? '★ ' : '';
-      const inBracket: string[] = [];
-      if (oneLine(n.gender)) inBracket.push(oneLine(n.gender));
-      // 年龄带记录时点:告诉副模型「此值是那时的,系统会自动推算,无需也不要重写」
-      if (oneLine(n.age)) inBracket.push(`${oneLine(n.age)}${n.ageTime ? `·记于${oneLine(n.ageTime)}` : ''}`);
-      const bracket = inBracket.length ? `(${inBracket.join('·')})` : '';
-      const place = n.follow ? ' [随行]' : oneLine(n.location) ? ` [在:${oneLine(n.location)}]` : '';
-      const tail: string[] = [];
-      if (oneLine(n.title)) tail.push(oneLine(n.title));
-      if (oneLine(n.relation)) tail.push(`与主角:${oneLine(n.relation)}`);
-      const title = tail.length ? ` —— ${tail.join(';')}` : '';
-      const state: string[] = [];
-      if (oneLine(n.outfit)) state.push(`着装:${oneLine(n.outfit)}`);
-      if (oneLine(n.condition)) state.push(`状态:${oneLine(n.condition)}`);
-      const stateStr = state.length ? ` 〔${state.join(';')}〕` : '';
-      return `  - ${star}${n.name}${bracket}${place}${title}${stateStr}`;
-    })
-    .join('\n');
+  return fmtNpcSummaryList(npcs);
 }
 
 /**
