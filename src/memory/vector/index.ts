@@ -154,7 +154,10 @@ export async function syncVectorIndex(signal?: AbortSignal): Promise<VectorSyncR
         }));
 
         // 摘要变化走 embed+upsert；仅全文/时间变化走轻量 payload 更新。
-        const { missing, stalePayload = [] } = await vecReconcile(database, scope, present);
+        const { deleted = 0, missing, stalePayload = [] } = await vecReconcile(database, scope, present);
+        // 后端对账删掉了陈旧条目（如用户经 ST 原生删楼、叶子随之消失）→ 召回依赖的内容已变，
+        // 立即失效缓存，避免后续复用含已删记忆的旧注入。
+        if (deleted > 0) invalidateRecallCache();
         const missingSet = new Set(missing);
         const staleSet = new Set(stalePayload);
         total.embedded += await embedAndUpsert(
@@ -244,10 +247,14 @@ export async function clearVectorIndex(): Promise<number> {
   return deleted;
 }
 
-/** 防抖触发索引同步:叶子生成/编辑/删除后调用,合并连续变动为一次。 */
+/** 防抖触发索引同步:叶子生成/编辑/删除后调用,合并连续变动为一次。
+ * 注意:这里**不再**顺带失效召回缓存——重生成/翻页时 ST 会先发 MESSAGE_DELETED/MESSAGE_SWIPED
+ * 再跑拦截器,若在此失效,缓存永远赶在拦截器查询之前被清空,重生成/翻页永远重新召回。
+ * 召回缓存的失效只发生在「叶子内容真正变化」的落点(见 applyLeafForFloor / apply.ts 编辑删除 /
+ * 对账删除),见 recall.ts 的 buildRecallCacheKey 注释:key 已排除正在重写的末 AI 楼,
+ * 重生成/翻页本就该命中缓存。 */
 export function scheduleVectorIndex(): void {
   mutationRevision++;
-  invalidateRecallCache();
   if (timer) clearTimeout(timer);
   if (!vectorIndexableHere()) {
     timer = null;

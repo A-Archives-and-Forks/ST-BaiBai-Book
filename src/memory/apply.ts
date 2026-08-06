@@ -5,6 +5,7 @@ import { mergeProtagonistDelta } from './protagonist';
 import { memory, recomputeDerived, saveMemory, scheduleLeafFlush } from './store';
 import { readItemsTagText, writeItemLogTag, writeVarLogTag } from './timeTag';
 import { scheduleVectorIndex } from './vector';
+import { invalidateRecallCache } from './vector/cache';
 import { createEmptyMemory } from './types';
 import type { BaibaiMemory, ItemDelta, ItemLogEntry, JsonValue, LeafExtra, MemNpc, MemPlan, MemScene, MemSummary, NpcDelta, PlanResolveItem, ProtagonistDelta, SceneDelta, SceneOp, SceneReparent, StoredDelta, SummaryDelta, VarOp, VarTemplate, VarTier } from './types';
 
@@ -1882,6 +1883,7 @@ export function deleteLeafAt(index: number): boolean {
   recomputeDerived();
   pruneBrokenComps();
   scheduleLeafFlush();
+  invalidateRecallCache(); // 叶子没了 → 召回不该再命中含它的旧结果
   scheduleVectorIndex(); // 叶子没了 → 对账删掉它的向量,免得被继续召回
   return true;
 }
@@ -1909,6 +1911,7 @@ export function editLeafAt(index: number, text: string, timeStart: string, timeE
   chat[index].extra = { ...(chat[index].extra ?? {}), bbs_leaf: leaf };
   recomputeDerived();
   scheduleLeafFlush();
+  invalidateRecallCache(); // 摘要变了 → 召回结果会变,先失效再重算
   scheduleVectorIndex(); // 正文变了 → docHash 变,防抖重 embed,召回及时用上新内容
   return true;
 }
@@ -1944,6 +1947,7 @@ export function editLeafFull(
   rewriteFloorTags(chat, index, delta);
   recomputeDerived();
   scheduleLeafFlush();
+  invalidateRecallCache(); // 摘要正文/时间变了 → 失效旧召回
   scheduleVectorIndex(); // 正文变了 → docHash 变,防抖重 embed
   return true;
 }
@@ -2101,6 +2105,7 @@ export function deleteSummarySubtrees(rootIds: string[]): DeleteSummarySubtreesR
 
   if (summaries > 0) saveMemory();
   if (leaves > 0) scheduleLeafFlush();
+  if (leaves > 0) invalidateRecallCache(); // 叶子被删 → 失效召回缓存
   if (leaves > 0) scheduleVectorIndex();
   return { leaves, summaries, imported };
 }

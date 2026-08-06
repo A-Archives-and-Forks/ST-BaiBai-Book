@@ -13,6 +13,7 @@ import { clampToTimeTags, cleanBody, parseTimeRange, syncTimeTagRegex, writeItem
 import { memory, recomputeDerived, scheduleLeafFlush } from './store';
 import type { LeafExtra, SummaryDelta } from './types';
 import { scheduleVectorIndex } from './vector';
+import { invalidateRecallCache } from './vector/cache';
 import { clearRecallInjection } from './vector/recall';
 import { reactive, watch } from 'vue';
 
@@ -1037,6 +1038,8 @@ function applyLeafForFloor(
   };
   if (replaceLeaf) invalidateSummaryAncestors(replaceLeaf.id);
   chat[aiFloor].extra = { ...(chat[aiFloor].extra ?? {}), bbs_leaf: leaf };
+  // 叶子正文/摘要已变 → 召回读到的向量内容会变,立即失效召回缓存(防重生成/翻页复用旧召回)。
+  invalidateRecallCache();
 
   if (!apiSettings.summaryOnlyMode) {
     // 把本楼物品净变动写进正文 </bbs_end> 之后(<bbs_items> 旁注,正则隐藏、不进副API摘要)。
