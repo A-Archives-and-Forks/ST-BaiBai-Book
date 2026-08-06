@@ -150,4 +150,18 @@ occurrence(summaryNpc, '人际:鲍勃之姐 与卡萝有旧怨', 1, '摘要输�
 occurrence(summaryNpc, '  - ★ 阿黛尔', 1, '一个 NPC 不应因两类关系被拆成重复记录');
 equal(fmtNpcSummaryList([]), '  (无)', '空 NPC 名册应保持既有占位格式');
 
+// store.ts 的 recomputeDerived 曾用不含 age/ageTime 的字段清单拷贝主角档案,
+// 导致重放算出的年龄永远到不了响应式镜像(UI 空白 + 注入缺失)。recomputeDerived
+// 依赖 ST context 难以单测,这里做源码级守卫:拷贝循环必须带上年龄锚点对。
+const storeSource = await readFile(new URL('../src/memory/store.ts', import.meta.url), 'utf8');
+const protagonistCopy = storeSource.match(/for \(const key of \[([^\]]+)\][^{]*\{\s*memory\.protagonist\[key\]/s);
+assert.ok(protagonistCopy, '未找到 recomputeDerived 的主角字段拷贝循环');
+includes(protagonistCopy[1], "'age'", '主角拷贝循环必须包含 age');
+includes(protagonistCopy[1], "'ageTime'", '主角拷贝循环必须包含 ageTime');
+
+// 注入端主角块必须读 memory.protagonist(响应式镜像),且年龄行走 ageDisplay 推算。
+const injectSource = await readFile(new URL('../src/memory/inject.ts', import.meta.url), 'utf8');
+includes(injectSource, "['年龄', ageDisplay(protagonist.age, protagonist.ageTime, now)]", '主角注入块必须包含年龄推算');
+includes(injectSource, 'fmtProtagonistContext(memory.protagonist', '主角注入必须读响应式镜像');
+
 console.log(`memory regression tests passed: ${assertions} assertions`);
