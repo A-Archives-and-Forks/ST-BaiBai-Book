@@ -93,7 +93,7 @@ function saveEdit() {
       <div v-for="it in memory.items" :key="it.id" class="bbs-item">
         <div class="bbs-item-head">
           <div class="bbs-item-main">
-            <span class="bbs-item-name">{{ it.name }}</span>
+            <span class="bbs-item-name" :title="it.name">{{ it.name }}</span>
             <span v-if="typeof it.qty === 'number'" class="bbs-item-qty">×{{ it.qty }}</span>
             <span v-if="it.carried === false && it.location" class="bbs-item-loc">
               <Icon name="scenes" /><span class="bbs-item-loc-text">{{ it.location }}</span>
@@ -195,7 +195,12 @@ function saveEdit() {
   font-size: 14px;
   font-weight: 500;
   color: var(--bbs-ink);
-  flex: 0 0 auto; /* 占自然宽度,不收缩不省略;数量紧贴其后 */
+  /* 允许收缩 + 单行省略:长名字截断显示(title 悬浮见全名),
+     不溢出容器压到右侧操作钮;数量/存放地仍紧贴其后 */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .bbs-item-qty {

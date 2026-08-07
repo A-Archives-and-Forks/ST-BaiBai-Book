@@ -404,7 +404,7 @@ function confirmRemove() {
       <article class="bbs-npc bbs-protagonist">
         <div class="bbs-npc-body">
           <div class="bbs-npc-head">
-            <span class="bbs-npc-name">{{ protagonistName }}</span>
+            <span class="bbs-npc-name" :title="protagonistName">{{ protagonistName }}</span>
             <span v-if="memory.protagonist.gender" class="bbs-npc-gender">{{ memory.protagonist.gender }}</span>
             <span v-if="protagonistAge" class="bbs-npc-gender" :title="ageTitle(memory.protagonist.age, memory.protagonist.ageTime)">{{ protagonistAge }}</span>
             <span class="bbs-npc-acts">
@@ -443,7 +443,7 @@ function confirmRemove() {
           <article v-for="n in mains" :key="n.id" class="bbs-npc is-present is-main">
             <div class="bbs-npc-body">
               <div class="bbs-npc-head">
-                <span class="bbs-npc-name">{{ n.name }}</span>
+                <span class="bbs-npc-name" :title="n.name">{{ n.name }}</span>
                 <span v-if="n.gender" class="bbs-npc-gender">{{ n.gender }}</span>
                 <span v-if="shownAge(n.age, n.ageTime)" class="bbs-npc-gender" :title="ageTitle(n.age, n.ageTime)">{{ shownAge(n.age, n.ageTime) }}</span>
                 <span v-if="n.title" class="bbs-npc-flag">{{ n.title }}</span>
@@ -479,7 +479,7 @@ function confirmRemove() {
           <article v-for="n in present" :key="n.id" class="bbs-npc is-present" :class="{ 'is-follow': n.follow }">
             <div class="bbs-npc-body">
               <div class="bbs-npc-head">
-                <span class="bbs-npc-name">{{ n.name }}</span>
+                <span class="bbs-npc-name" :title="n.name">{{ n.name }}</span>
                 <span v-if="n.gender" class="bbs-npc-gender">{{ n.gender }}</span>
                 <span v-if="shownAge(n.age, n.ageTime)" class="bbs-npc-gender" :title="ageTitle(n.age, n.ageTime)">{{ shownAge(n.age, n.ageTime) }}</span>
                 <span v-if="n.follow" class="bbs-npc-flag is-follow"><Icon name="pin" />随行</span>
@@ -532,7 +532,7 @@ function confirmRemove() {
           <article v-for="n in nearby" :key="n.id" class="bbs-npc is-nearby">
             <div class="bbs-npc-body">
               <div class="bbs-npc-head">
-                <span class="bbs-npc-name">{{ n.name }}</span>
+                <span class="bbs-npc-name" :title="n.name">{{ n.name }}</span>
                 <span v-if="n.gender" class="bbs-npc-gender">{{ n.gender }}</span>
                 <span v-if="shownAge(n.age, n.ageTime)" class="bbs-npc-gender" :title="ageTitle(n.age, n.ageTime)">{{ shownAge(n.age, n.ageTime) }}</span>
                 <span v-if="n.location" class="bbs-npc-flag"><Icon name="scenes" />{{ n.location }}</span>
@@ -579,7 +579,7 @@ function confirmRemove() {
           <article v-for="n in absent" :key="n.id" class="bbs-npc is-absent">
             <div class="bbs-npc-body">
               <div class="bbs-npc-head">
-                <span class="bbs-npc-name">{{ n.name }}</span>
+                <span class="bbs-npc-name" :title="n.name">{{ n.name }}</span>
                 <span v-if="n.gender" class="bbs-npc-gender">{{ n.gender }}</span>
                 <span v-if="shownAge(n.age, n.ageTime)" class="bbs-npc-gender" :title="ageTitle(n.age, n.ageTime)">{{ shownAge(n.age, n.ageTime) }}</span>
                 <span v-if="n.location" class="bbs-npc-flag"><Icon name="scenes" />{{ n.location }}</span>
@@ -1000,7 +1000,12 @@ function confirmRemove() {
   font-size: 14px;
   font-weight: 600;
   color: var(--bbs-ink);
-  flex: 0 0 auto;
+  /* 允许收缩 + 单行省略:长名字截断显示(title 悬浮见全名),
+     不把右侧操作钮顶出卡片——卡有 overflow:hidden,溢出即被裁掉点不到 */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 /* 性别小标签:紧凑灰色括注,跟在名字后面 */
