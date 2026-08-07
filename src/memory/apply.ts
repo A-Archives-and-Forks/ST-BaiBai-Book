@@ -7,7 +7,7 @@ import { readItemsTagText, writeItemLogTag, writeVarLogTag } from './timeTag';
 import { scheduleVectorIndex } from './vector';
 import { invalidateRecallCache } from './vector/cache';
 import { createEmptyMemory } from './types';
-import type { BaibaiMemory, ItemDelta, ItemLogEntry, JsonValue, LeafExtra, MemNpc, MemPlan, MemScene, MemSummary, NpcDelta, PlanResolveItem, ProtagonistDelta, SceneDelta, SceneOp, SceneReparent, StoredDelta, SummaryDelta, VarOp, VarTemplate, VarTier } from './types';
+import type { BaibaiMemory, ItemDelta, ItemLogEntry, JsonValue, LeafExtra, LifeDetailAdd, LifeDetailUpdate, MemLifeDetail, MemNpc, MemPlan, MemScene, MemSummary, NpcDelta, PlanResolveItem, ProtagonistDelta, SceneDelta, SceneFocus, SceneOp, SceneReparent, StoredDelta, SummaryDelta, VarOp, VarTemplate, VarTier } from './types';
 
 let idSeq = 0;
 /** 生成稳定唯一 id(不依赖 random;时间走 nowMs 便于测试注入) */
@@ -180,8 +180,10 @@ function cleanNpcDelta(raw: unknown): NpcDelta | null {
     title: optText(raw.title),
     desc: optText(raw.desc),
     personality: optText(raw.personality),
-    outfit: optText(raw.outfit),
-    condition: optText(raw.condition),
+    // 即时层(覆盖型快照)用 patchText:省略=保持旧值,空字符串=明确清空(痊愈/脱下)。
+    // 与 cleanProtagonistDelta 同语义;optText 会把空串洗成 undefined,导致永远无法清空。
+    outfit: patchText(raw.outfit),
+    condition: patchText(raw.condition),
     important: optBool(raw.important),
     follow: optBool(raw.follow),
     location: optText(raw.location),
@@ -190,6 +192,66 @@ function cleanNpcDelta(raw: unknown): NpcDelta | null {
 
 function cleanNpcList(v: unknown): NpcDelta[] {
   return arr(v).map(cleanNpcDelta).filter((x): x is NpcDelta => !!x);
+}
+
+/**
+ * 清洗局势卡快照,三态语义与 patchText 同族:
+ *  - undefined → undefined(未提供=不更新)
+ *  - null      → null(明确清空:场面彻底结束/章节落幕)
+ *  - 对象      → 规范化后的整卡(缺局面一句话则视为无效更新,不当清空)
+ */
+function cleanSceneFocus(raw: unknown): SceneFocus | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+  if (!isRecord(raw)) return undefined;
+  const situation = optText(raw.situation);
+  if (!situation) return undefined;
+  const out: SceneFocus = { situation, participants: cleanTextList(raw.participants) };
+  // currentFocus 已废弃:不再提示 AI 输出,此处仅为重放旧 delta 保留兼容
+  const currentFocus = optText(raw.currentFocus);
+  if (currentFocus) out.currentFocus = currentFocus;
+  const tension = optText(raw.tension);
+  if (tension) out.tension = tension;
+  const pendingBeat = optText(raw.pendingBeat);
+  if (pendingBeat) out.pendingBeat = pendingBeat;
+  return out;
+}
+
+/** 清洗生活细节 add:text 必填;topics/anchors 各留前几个短词。 */
+function cleanLifeDetailAdd(raw: unknown): LifeDetailAdd | null {
+  if (!isRecord(raw)) return null;
+  const text = optText(raw.text);
+  if (!text) return null;
+  const out: LifeDetailAdd = { text };
+  const topics = cleanTextList(raw.topics).slice(0, 3);
+  if (topics.length) out.topics = topics;
+  const anchors = cleanTextList(raw.anchors).slice(0, 5);
+  if (anchors.length) out.anchors = anchors;
+  const until = optText(raw.until);
+  if (until) out.until = until;
+  return out;
+}
+function cleanLifeDetailAddList(v: unknown): LifeDetailAdd[] {
+  return arr(v).map(cleanLifeDetailAdd).filter((x): x is LifeDetailAdd => !!x);
+}
+
+/** 清洗生活细节 update:稳定 id 必填;tier 仅手动 op 出现,透传合法值。 */
+function cleanLifeDetailUpdate(raw: unknown): (LifeDetailUpdate & { tier?: 'pinned' | 'active' | 'archive' }) | null {
+  if (!isRecord(raw)) return null;
+  const id = optText(raw.id);
+  if (!id) return null;
+  const out: LifeDetailUpdate & { tier?: 'pinned' | 'active' | 'archive' } = { id };
+  const text = optText(raw.text);
+  if (text) out.text = text;
+  if (raw.topics !== undefined) out.topics = cleanTextList(raw.topics).slice(0, 3);
+  if (raw.anchors !== undefined) out.anchors = cleanTextList(raw.anchors).slice(0, 5);
+  if (raw.until !== undefined) out.until = optText(raw.until) ?? ''; // 空串=清除时效
+  const tier = optText(raw.tier);
+  if (tier === 'pinned' || tier === 'active' || tier === 'archive') out.tier = tier;
+  return out;
+}
+function cleanLifeDetailUpdateList(v: unknown): (LifeDetailUpdate & { tier?: 'pinned' | 'active' | 'archive' })[] {
+  return arr(v).map(cleanLifeDetailUpdate).filter((x): x is LifeDetailUpdate & { tier?: 'pinned' | 'active' | 'archive' } => !!x);
 }
 
 function cleanProtagonistDelta(raw: unknown): ProtagonistDelta | null {
@@ -247,6 +309,8 @@ function cleanStoredDelta(raw: StoredDelta): StoredDelta {
   if (time) out.time = time;
   if (location) out.location = location;
   if (raw.locationPath !== undefined) out.locationPath = locationPath;
+  const sceneFocus = cleanSceneFocus(raw.sceneFocus);
+  if (sceneFocus !== undefined) out.sceneFocus = sceneFocus;
   const protagonist = cleanProtagonistDelta(raw.protagonist);
   if (protagonist) out.protagonist = protagonist;
 
@@ -300,6 +364,19 @@ function cleanStoredDelta(raw: StoredDelta): StoredDelta {
     if (Object.keys(plans).length) out.plans = plans;
   }
 
+  if (isRecord(raw.lifeDetails)) {
+    const lifeDetails: NonNullable<StoredDelta['lifeDetails']> = {};
+    const add = cleanLifeDetailAddList(raw.lifeDetails.add);
+    const update = cleanLifeDetailUpdateList(raw.lifeDetails.update);
+    const archive = cleanTextList(raw.lifeDetails.archive, ['id', 'ref', 'detailId']);
+    const remove = cleanTextList(raw.lifeDetails.remove, ['id', 'ref', 'detailId']);
+    if (add.length) lifeDetails.add = add;
+    if (update.length) lifeDetails.update = update;
+    if (archive.length) lifeDetails.archive = archive;
+    if (remove.length) lifeDetails.remove = remove;
+    if (Object.keys(lifeDetails).length) out.lifeDetails = lifeDetails;
+  }
+
   const varOps = finalizeVarOps(raw.varOps);
   if (varOps.length) out.varOps = varOps;
   return out;
@@ -318,6 +395,11 @@ export function npcId(name: string): string {
 /** 计划 id:产生它的叶子 id + 在该叶子 add 数组里的序号 */
 export function planId(leafId: string, addIndex: number): string {
   return `plan:${leafId}#${addIndex}`;
+}
+
+/** 生活细节 id:产生它的叶子 id + 在该叶子 add 数组里的序号(与 planId 同构) */
+export function detailId(leafId: string, addIndex: number): string {
+  return `detail:${leafId}#${addIndex}`;
 }
 
 /** 从一条 resolve 指令取稳定 plan id(兼容裸字符串旧数据) */
@@ -1065,6 +1147,13 @@ function applyStoredDeltaTo(mem: BaibaiMemory, d: StoredDelta, leaf: { id: strin
   }
   if (d.protagonist) applyProtagonistState(mem.protagonist, d.protagonist, logTime || mem.state.time);
 
+  // 局势卡:undefined=不动;null=清空;对象=整卡覆盖,并盖上本叶子的故事内时间
+  if (d.sceneFocus !== undefined) {
+    mem.state.sceneFocus = d.sceneFocus
+      ? { ...d.sceneFocus, updatedTime: logTime || mem.state.time || undefined }
+      : null;
+  }
+
   // 物品(一切计数:add 默认 +1,带符号累加,数量 ≤0 自动移除)
   if (d.items) {
     for (const add of d.items.add ?? []) {
@@ -1267,6 +1356,51 @@ function applyStoredDeltaTo(mem: BaibaiMemory, d: StoredDelta, leaf: { id: strin
     }
   }
 
+  // 生活小档案:add(去重)→ update → archive → remove。id 确定性:detail:${leafId}#序号,重放幂等
+  if (d.lifeDetails) {
+    /** 去重归一化:norm 基础上再忽略结尾标点(「不吃香菜」与「不吃香菜!」视为同条,防 AI 换标点重复记)。 */
+    const normDetail = (s: string) => norm(s).replace(/[，。！？!?、；;：:\s]+$/u, '');
+    (d.lifeDetails.add ?? []).forEach((add, i) => {
+      const text = add.text?.trim();
+      if (!text) return;
+      // 同规范化文本已存在 → 不产生重复行;但把新带的 topics/anchors/until 合并进既有条(补充信息不丢)
+      const dup = mem.lifeDetails.find(x => normDetail(x.text) === normDetail(text));
+      if (dup) {
+        if (add.topics?.length) dup.topics = add.topics.slice(0, 3);
+        if (add.anchors?.length) dup.anchors = add.anchors.slice(0, 5);
+        if (add.until?.trim()) dup.until = add.until.trim();
+        return;
+      }
+      mem.lifeDetails.push({
+        id: detailId(leaf.id, i),
+        text,
+        topics: (add.topics ?? []).slice(0, 3),
+        anchors: (add.anchors ?? []).slice(0, 5),
+        tier: 'active',
+        until: add.until?.trim() || undefined,
+        createdTime: logTime || undefined,
+        createdAt: t,
+      });
+    });
+    for (const upd of d.lifeDetails.update ?? []) {
+      const det = mem.lifeDetails.find(x => x.id === upd.id);
+      if (!det) continue;
+      if (upd.text?.trim()) det.text = upd.text.trim();
+      if (upd.topics) det.topics = upd.topics.slice(0, 3);
+      if (upd.anchors) det.anchors = upd.anchors.slice(0, 5);
+      if (upd.until !== undefined) det.until = upd.until.trim() || undefined; // 空串=清除时效
+      if (upd.tier) det.tier = upd.tier;
+    }
+    for (const id of d.lifeDetails.archive ?? []) {
+      const det = mem.lifeDetails.find(x => x.id === id);
+      if (det) det.tier = 'archive';
+    }
+    for (const id of d.lifeDetails.remove ?? []) {
+      const idx = mem.lifeDetails.findIndex(x => x.id === id);
+      if (idx >= 0) mem.lifeDetails.splice(idx, 1);
+    }
+  }
+
   // 自定义变量:按顺序把本楼路径命令施加到 JSON 状态
   if (d.varOps?.length) applyVarOps(mem.vars, d.varOps);
 }
@@ -1280,11 +1414,11 @@ function applyStoredDeltaTo(mem: BaibaiMemory, d: StoredDelta, leaf: { id: strin
 export function deriveMemory(
   chat: STMessage[] | null,
   upToExclusive?: number,
-): Pick<BaibaiMemory, 'state' | 'protagonist' | 'items' | 'plans' | 'scenes' | 'npcs' | 'itemLog' | 'vars'> {
+): Pick<BaibaiMemory, 'state' | 'protagonist' | 'items' | 'plans' | 'scenes' | 'npcs' | 'itemLog' | 'lifeDetails' | 'vars'> {
   const mem = createEmptyMemory();
   // 变量从三层合并模板起算(无 chat 也返回初始状态);seed 时展开模板里的 ST 宏({{user}} 等)
   mem.vars = expandVarMacros(mergeTemplates(memory.varTemplates));
-  if (!chat) return { state: mem.state, protagonist: mem.protagonist, items: mem.items, plans: mem.plans, scenes: mem.scenes, npcs: mem.npcs, itemLog: mem.itemLog, vars: mem.vars };
+  if (!chat) return { state: mem.state, protagonist: mem.protagonist, items: mem.items, plans: mem.plans, scenes: mem.scenes, npcs: mem.npcs, itemLog: mem.itemLog, lifeDetails: mem.lifeDetails, vars: mem.vars };
   const end = typeof upToExclusive === 'number' ? Math.min(upToExclusive, chat.length) : chat.length;
   for (let i = 0; i < end; i++) {
     if (chat[i]?.extra?.bbs_omit) continue; // 番外楼:不参与派生重放
@@ -1296,7 +1430,7 @@ export function deriveMemory(
   }
   // 只留最近若干条变动(注入/喂模型够用即可,省 token)
   if (mem.itemLog.length > ITEM_LOG_KEEP) mem.itemLog = mem.itemLog.slice(-ITEM_LOG_KEEP);
-  return { state: mem.state, protagonist: mem.protagonist, items: mem.items, plans: mem.plans, scenes: mem.scenes, npcs: mem.npcs, itemLog: mem.itemLog, vars: mem.vars };
+  return { state: mem.state, protagonist: mem.protagonist, items: mem.items, plans: mem.plans, scenes: mem.scenes, npcs: mem.npcs, itemLog: mem.itemLog, lifeDetails: mem.lifeDetails, vars: mem.vars };
 }
 
 /** 变动日志保留的最近条数(注入与喂摘要共用)。 */
@@ -1423,7 +1557,7 @@ function parseShortRef(ref: string): number | null {
  * 把 AI 返回的 SummaryDelta 固化成可持久化的 StoredDelta。
  * 关键:plans.resolve 的运行期短序号(p1/p2…)按 openPlansOrdered 翻译成**稳定 plan id**。
  */
-export function finalizeDelta(delta: SummaryDelta, openPlansOrdered: { id: string }[]): StoredDelta {
+export function finalizeDelta(delta: SummaryDelta, openPlansOrdered: { id: string }[], lifeDetailsOrdered: { id: string }[] = []): StoredDelta {
   const out: StoredDelta = {};
   const time = optText(delta.time);
   const location = optText(delta.location);
@@ -1432,6 +1566,8 @@ export function finalizeDelta(delta: SummaryDelta, openPlansOrdered: { id: strin
   // 权威定位路径:规范化后非空才固化(只有给了 location 才有意义,但不强制——手动场景可单独给)
   const lp = cleanPath(delta.locationPath);
   if (lp.length) out.locationPath = lp;
+  const sceneFocus = cleanSceneFocus(delta.sceneFocus);
+  if (sceneFocus !== undefined) out.sceneFocus = sceneFocus;
   const protagonist = cleanProtagonistDelta(delta.protagonist);
   if (protagonist) out.protagonist = protagonist;
 
@@ -1496,6 +1632,37 @@ export function finalizeDelta(delta: SummaryDelta, openPlansOrdered: { id: strin
       if (out.length) plans.resolve = out;
     }
     if (Object.keys(plans).length) out.plans = plans;
+  }
+
+  if (isRecord(delta.lifeDetails)) {
+    // 短序号 d1/d2… 按「提示词里展示的当前档案顺序」翻译成稳定 id;已是 detail: 稳定 id 的原样保留
+    const resolveDetailRef = (ref: unknown): string | null => {
+      const t = namedText(ref, ['id', 'ref', 'detailId']);
+      if (!t) return null;
+      if (t.startsWith('detail:')) return t;
+      const m = t.match(/^d(\d+)$/i);
+      if (!m) return null;
+      const target = lifeDetailsOrdered[Number(m[1]) - 1];
+      return target?.id ?? null;
+    };
+    const lifeDetails: NonNullable<StoredDelta['lifeDetails']> = {};
+    const add = cleanLifeDetailAddList(delta.lifeDetails.add);
+    if (add.length) lifeDetails.add = add;
+    const update = cleanLifeDetailUpdateList(delta.lifeDetails.update)
+      .map(u => {
+        const id = resolveDetailRef(u.id);
+        // AI 路径剥离 tier:层级是手动投放控制,prompt 从未提供该字段;幻觉输出不得绕过「置顶手动专属」
+        if (!id) return null;
+        const { tier: _tier, ...rest } = u;
+        return { ...rest, id };
+      })
+      .filter((u): u is LifeDetailUpdate & { tier?: 'pinned' | 'active' | 'archive' } => !!u);
+    if (update.length) lifeDetails.update = update;
+    const archive = arr(delta.lifeDetails.archive).map(resolveDetailRef).filter((x): x is string => !!x);
+    if (archive.length) lifeDetails.archive = archive;
+    const remove = arr(delta.lifeDetails.remove).map(resolveDetailRef).filter((x): x is string => !!x);
+    if (remove.length) lifeDetails.remove = remove;
+    if (Object.keys(lifeDetails).length) out.lifeDetails = lifeDetails;
   }
 
   if (Array.isArray(delta.vars) && delta.vars.length) {
@@ -1654,6 +1821,23 @@ export function setVarsRoot(newJson: Record<string, JsonValue>): boolean {
 export function setProtagonist(patch: ProtagonistDelta): boolean {
   const clean = cleanProtagonistDelta(patch);
   return clean ? appendOpToLatestLeaf({ protagonist: clean }) : false;
+}
+
+/** 手动添加一条生活细节(挂在最新叶子;新条目进 active 层)。无有效叶子时返回 false。 */
+export function addLifeDetail(input: LifeDetailAdd): boolean {
+  const clean = cleanLifeDetailAdd(input);
+  return clean ? appendOpToLatestLeaf({ lifeDetails: { add: [clean] } }) : false;
+}
+
+/** 手动更新一条生活细节(文案/标签/时效/层级)。置顶/沉降/恢复都走这里。无有效叶子时返回 false。 */
+export function updateLifeDetail(id: string, patch: Omit<LifeDetailUpdate, 'id'> & { tier?: 'pinned' | 'active' | 'archive' }): boolean {
+  const clean = cleanLifeDetailUpdate({ ...patch, id });
+  return clean ? appendOpToLatestLeaf({ lifeDetails: { update: [clean] } }) : false;
+}
+
+/** 手动删除一条生活细节。无有效叶子时返回 false。 */
+export function removeLifeDetail(id: string): boolean {
+  return appendOpToLatestLeaf({ lifeDetails: { remove: [id] } });
 }
 
 /**

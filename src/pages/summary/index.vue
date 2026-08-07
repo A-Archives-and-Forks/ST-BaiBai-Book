@@ -9,6 +9,7 @@ import { estimateInjectionTokenBreakdown, refreshInjection, selectViewNodes, typ
 import { compactTimeLabel, formatRange, splitTimeLabel } from '@/memory/timeTag';
 import { relativeTimeLabel, weekdayLabel } from '@/memory/timeRel';
 import { derivedMeta, memory, recomputeDerived } from '@/memory/store';
+import type { SceneFocus } from '@/memory/types';
 import { getContext } from '@/st/context';
 import { toast } from '@/st/toast';
 import { computed, nextTick, onMounted, onUnmounted, provide, ref } from 'vue';
@@ -174,6 +175,39 @@ function savePlanEdit() {
   });
   refreshInjection();
   editingPlan.value = null;
+}
+
+/* —— 眼下局势卡(编辑弹窗)——
+ * 覆盖型单对象:手动编辑=整卡替换;清空=写 null(场面落幕)。
+ * 与手动计划同机制:追加到最新叶子的 delta,重放后生效。 */
+const focus = computed(() => memory.state.sceneFocus);
+const editingFocus = ref<{ situation: string; participants: string; tension: string; pendingBeat: string } | null>(null);
+function openFocusEdit() {
+  const f = focus.value;
+  editingFocus.value = {
+    situation: f?.situation ?? '',
+    participants: (f?.participants ?? []).join('、'),
+    tension: f?.tension ?? '',
+    pendingBeat: f?.pendingBeat ?? '',
+  };
+}
+function cancelFocusEdit() {
+  editingFocus.value = null;
+}
+function saveFocusEdit() {
+  const e = editingFocus.value;
+  if (!e || !e.situation.trim()) return;
+  const participants = e.participants.split(/[、,，/]/).map(s => s.trim()).filter(Boolean);
+  const card: SceneFocus = { situation: e.situation.trim(), participants };
+  if (e.tension.trim()) card.tension = e.tension.trim();
+  if (e.pendingBeat.trim()) card.pendingBeat = e.pendingBeat.trim();
+  if (!appendOpToLatestLeaf({ sceneFocus: card })) return;
+  refreshInjection();
+  editingFocus.value = null;
+}
+function clearFocus() {
+  if (!appendOpToLatestLeaf({ sceneFocus: null })) return;
+  refreshInjection();
 }
 
 /* ============ 未摘要楼层 ============
@@ -758,6 +792,101 @@ provide(SUMMARY_CTX, {
 
 <template>
   <section class="bbs-page">
+    <!-- ===== 眼下局势卡:当前场面快照(覆盖型;省略=不动,清空=落幕) ===== -->
+    <div class="bbs-fold-section">
+      <div class="bbs-section-head">
+        <h2 class="bbs-title bbs-title-sub">眼下局势</h2>
+        <!-- 无卡时:铅笔留在区块头;有卡时:编辑/清空收进卡头操作区 -->
+        <span v-if="!focus" class="bbs-focus-acts">
+          <button
+            class="bbs-add-mini"
+            type="button"
+            :disabled="!hasLeaf"
+            :title="hasLeaf ? '手动编写局势卡' : '需先有摘要才能手动编写'"
+            @click="openFocusEdit"
+          >
+            <Icon name="edit" />
+          </button>
+        </span>
+      </div>
+      <!-- 与角色卡同构:左色条 + 头行(在场者 + 记时 + 操作区)+ 主文 + 彩色分类小标签字段表 -->
+      <article v-if="focus" class="bbs-focus">
+        <div class="bbs-focus-head">
+          <span class="bbs-focus-names" :class="{ 'is-empty': !focus.participants.length }">
+            {{ focus.participants.length ? focus.participants.join('、') : '眼下局势' }}
+          </span>
+          <span v-if="focus.updatedTime" class="bbs-focus-time">记于 {{ focus.updatedTime }}</span>
+          <span class="bbs-focus-acts">
+            <button
+              class="bbs-plan-act"
+              type="button"
+              :disabled="!hasLeaf"
+              :title="hasLeaf ? '手动修改局势卡' : '需先有摘要才能手动修改'"
+              @click="openFocusEdit"
+            >
+              <Icon name="edit" />
+            </button>
+            <button
+              class="bbs-plan-act bbs-plan-del"
+              type="button"
+              :disabled="!hasLeaf"
+              title="清空局势卡(场面落幕)"
+              @click="clearFocus"
+            >
+              <Icon name="close" />
+            </button>
+          </span>
+        </div>
+        <p class="bbs-focus-situation">{{ focus.situation }}</p>
+        <dl v-if="focus.currentFocus || focus.tension || focus.pendingBeat" class="bbs-focus-fields">
+          <div v-if="focus.currentFocus" class="bbs-focus-field">
+            <!-- currentFocus 已废弃:仅旧数据仍带值时才展示,不再提示记录 -->
+            <dt>焦点</dt>
+            <dd>{{ focus.currentFocus }}</dd>
+          </div>
+          <div v-if="focus.tension" class="bbs-focus-field f-tension">
+            <dt>张力</dt>
+            <dd>{{ focus.tension }}</dd>
+          </div>
+          <div v-if="focus.pendingBeat" class="bbs-focus-field f-next">
+            <dt>将至</dt>
+            <dd>{{ focus.pendingBeat }}</dd>
+          </div>
+        </dl>
+      </article>
+      <p v-else class="bbs-plan-empty">还没有局势卡。场面实质变化时摘要会自动更新,也可点上方铅笔手动编写。</p>
+    </div>
+
+    <!-- 局势卡编辑弹窗 -->
+    <ModalMask :open="!!editingFocus" @close="cancelFocusEdit">
+      <div v-if="editingFocus" class="bbs-modal" role="dialog" aria-modal="true" aria-label="编辑局势卡">
+        <header class="bbs-modal-head">
+          <span class="bbs-modal-title">眼下局势卡</span>
+          <button class="bbs-summary-act" type="button" title="关闭" @click="cancelFocusEdit"><Icon name="close" /></button>
+        </header>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">局面(一句话)</span>
+          <textarea v-model="editingFocus.situation" class="bbs-input bbs-modal-textarea" rows="2" placeholder="如「午后同居日常,她情绪有点低落」/「潜行中,刚被巡逻队发现」"></textarea>
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">在场参与者(顿号分隔)</span>
+          <input v-model="editingFocus.participants" class="bbs-input" type="text" placeholder="如 主角、阿黛尔" />
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">互动张力(可选,高门槛)</span>
+          <input v-model="editingFocus.tension" class="bbs-input" type="text" placeholder="仅明确且持续的社交张力,如 冷战/尴尬" />
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">即将发生(可选,禁预测)</span>
+          <input v-model="editingFocus.pendingBeat" class="bbs-input" type="text" placeholder="仅正文明确预告/约定的事" />
+        </label>
+        <footer class="bbs-modal-foot">
+          <button class="bbs-btn" type="button" @click="cancelFocusEdit">取消</button>
+          <button class="bbs-btn bbs-btn-primary" type="button" :disabled="!editingFocus.situation.trim()" @click="saveFocusEdit">保存</button>
+        </footer>
+      </div>
+    </ModalMask>
+
     <!-- ===== 计划 / 悬念:顶部两区,各自折叠计数 ===== -->
     <!-- 结构同构、配置驱动(foldGroups):标题行兼折叠开关,右侧「+」独立(disabled 时不响应,不误触折叠) -->
     <div v-for="g in foldGroups" :key="g.kind" class="bbs-fold-section">
@@ -1699,6 +1828,133 @@ provide(SUMMARY_CTX, {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* —— 眼下局势卡:与角色卡同构——左色条 + 头行(在场者+记时+操作区)+ 主文 + 分类标签字段表 —— */
+.bbs-focus-acts {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+.bbs-focus {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--bbs-line);
+  border-radius: var(--bbs-radius);
+  background: var(--bbs-surface);
+  overflow: hidden; /* 让左色条贴着圆角边缘 */
+}
+/* 左缘一道金色条:与角色卡「在场」色条同款 */
+.bbs-focus::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--bbs-accent);
+  opacity: 0.5;
+}
+/* 头行:在场者名字 + 记时小标 + 操作区(靠右,桌面 hover 才浮现,同角色卡) */
+.bbs-focus-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.bbs-focus-names {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--bbs-ink);
+  min-width: 0;
+  word-break: break-word;
+}
+.bbs-focus-names.is-empty {
+  font-weight: 400;
+  color: var(--bbs-ink-muted);
+}
+.bbs-focus-time {
+  font-size: 11px;
+  color: var(--bbs-ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+@media (hover: hover) {
+  .bbs-focus .bbs-focus-acts {
+    opacity: 0;
+    transition: opacity var(--bbs-dur) var(--bbs-ease);
+  }
+  .bbs-focus:hover .bbs-focus-acts,
+  .bbs-focus-acts:focus-within {
+    opacity: 1;
+  }
+}
+/* 局面:主文,类比角色卡的正文段 */
+.bbs-focus-situation {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--bbs-ink);
+  word-break: break-word;
+}
+/* 字段表:与角色卡同款「彩色类别标签 + 内容」对齐行 */
+.bbs-focus-fields {
+  margin: 2px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.bbs-focus-field {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.bbs-focus-field dt {
+  flex: 0 0 auto;
+  width: 30px;
+  text-align: center;
+  padding: 1px 0;
+  border-radius: var(--bbs-radius-sm);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+  /* 默认中性(旧数据焦点行沿用),具体类别下方各自染色 */
+  background: var(--bbs-surface-2);
+  color: var(--bbs-ink-muted);
+}
+.bbs-focus-field dd {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--bbs-ink-soft);
+  word-break: break-word;
+}
+/* 张力:暖色标签——正在持续的关系气压,与「会变的即时状态」同级醒目 */
+.bbs-focus-field.f-tension dt {
+  background: var(--bbs-warning-soft);
+  color: var(--bbs-warning);
+}
+.bbs-focus-field.f-tension dd {
+  color: var(--bbs-ink);
+}
+/* 将至:强调金标签——正文明确预告的下一拍,是关键前瞻信息 */
+.bbs-focus-field.f-next dt {
+  background: var(--bbs-accent-soft);
+  color: var(--bbs-accent);
+}
+.bbs-focus-field.f-next dd {
+  color: var(--bbs-ink);
 }
 
 /* —— 分章分隔:计划/悬念 与 摘要 两区之间的明确界线 —— */

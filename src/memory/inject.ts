@@ -18,9 +18,9 @@ import { fmtItems, fmtPlans, fmtResolvedPlans, renderVarsState, selectRecentReso
 import { fmtNpcTiesContext } from './npcRelations';
 import { memory } from './store';
 import { compactTimeLabel, formatRange, latestStoryTime, splitTimeLabel, timeTagPrompt } from './timeTag';
-import { relativeTimeLabel, weekdayLabel, ageDisplay } from './timeRel';
-import { selectViewNodes, type ViewNode } from './select';
-import type { LeafExtra, MemItem, MemNpc, MemProtagonist, MemScene, MemSummary } from './types';
+import { relativeTimeLabel, weekdayLabel, ageDisplay, calculateRelativeDays } from './timeRel';
+import { selectViewNodes, selectLifeDetailsForInjection, type ViewNode } from './select';
+import type { LeafExtra, MemItem, MemLifeDetail, MemNpc, MemProtagonist, MemScene, MemSummary, SceneFocus } from './types';
 
 // 摘要页列表复用同一套选择逻辑,经此 re-export(纯算法在 select.ts,零依赖、可单测)
 export { selectViewNodes, type ViewNode };
@@ -64,6 +64,19 @@ function isTrackableAiMessage(m: STMessage | undefined): boolean {
   if (typeof m.mes !== 'string' || !m.mes.trim()) return false;
   if (m.extra?.bbs_hidden) return true;
   return !m.is_system;
+}
+
+/** 触发匹配的近期上下文:最近几楼正文(新旧都可,含用户楼)拼一起,截断防暴。 */
+function recentContextText(): string {
+  const chat = getContext()?.chat;
+  if (!chat?.length) return '';
+  const texts: string[] = [];
+  for (let i = chat.length - 1; i >= 0 && texts.length < 6; i--) {
+    const m = chat[i];
+    const mes = typeof m?.mes === 'string' ? m.mes.trim() : '';
+    if (mes) texts.push(mes);
+  }
+  return texts.join('\n').slice(0, 4000);
 }
 
 /**
@@ -531,6 +544,27 @@ export function buildStateInjectionText(): string {
   }
   if (memory.state.location) st.push(`当前地点:${oneLine(memory.state.location)}`);
 
+  // 互动局势卡:衔接当下场面。tension/将发生仅作隐性氛围约束,明确告知勿点破——防过度提及。
+  const focus = memory.state.sceneFocus;
+  if (focus) {
+    const bits: string[] = [`局面:${oneLine(focus.situation)}`];
+    const who = focus.participants.map(oneLine).filter(Boolean).join('、');
+    if (who) bits.push(`在场:${who}`);
+    if (focus.currentFocus) bits.push(`当前焦点:${oneLine(focus.currentFocus)}`);
+    if (focus.tension) bits.push(`互动张力:${oneLine(focus.tension)}(隐性氛围约束:自然体现即可,不要点破或反复提及)`);
+    if (focus.pendingBeat) bits.push(`即将发生:${oneLine(focus.pendingBeat)}(自然过渡即可,勿生硬推进)`);
+    st.push(`[当前互动局势]\n${bits.join('\n')}`);
+  }
+
+  // 生活小档案:置顶常驻 + 关键词触发的时效/沉降层。「记住 ≠ 每回合必提」——没命中就不出现。
+  if (apiSettings.lifeDetailsEnabled && memory.lifeDetails.length) {
+    const picked = selectLifeDetailsForInjection(memory.lifeDetails, recentContextText(), memory.state.time, calculateRelativeDays);
+    if (picked.length) {
+      const lines = picked.map(d => `- ${oneLine(d.text)}`);
+      st.push(`[主角生活细节]\n${lines.join('\n')}\n(以上仅在与当前对话自然相关时参考;不要逐条复述、不要刻意提及,用不上就忽略)`);
+    }
+  }
+
   const protagonistBlock = fmtProtagonistContext(memory.protagonist, getContext()?.name1 ?? '', memory.state.time);
   if (protagonistBlock) st.push(`[主角当前状态]\n${protagonistBlock}`);
 
@@ -577,7 +611,7 @@ export function buildStateInjectionText(): string {
   // 状态块在有任何有意义内容时才注入(物品/计划即使空也会有「(无)」占位,
   // 但只要存在摘要或时间/地点就值得带上整块)
   const hasProtagonist = Object.values(memory.protagonist).some(value => !!oneLine(value));
-  const hasState = memory.state.time || memory.state.location || hasProtagonist || memory.items.length || memory.scenes.length || memory.npcs.length || openPlans.length || hasVarState;
+  const hasState = memory.state.time || memory.state.location || memory.state.sceneFocus || hasProtagonist || memory.items.length || memory.scenes.length || memory.npcs.length || openPlans.length || hasVarState || (apiSettings.lifeDetailsEnabled && memory.lifeDetails.length);
   if (!hasState) return '';
   // 首尾私密简报框定,避免主模型把状态快照当成要复述/输出的模板(正文后跟吐一份状态)
   return `${MEMORY_BRIEFING_NOTE}\n[当前状态]\n${st.join('\n')}\n${MEMORY_BRIEFING_END}`;

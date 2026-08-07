@@ -346,6 +346,68 @@ export interface MemState {
    * 可比 location 粗(只指到上级);缺省/找不到时,定位退回按 location 的收紧模糊匹配。
    */
   locationPath?: string[];
+  /** 互动局势卡:当前场面快照。null=无;覆盖语义(整卡替换,不是补丁) */
+  sceneFocus: SceneFocus | null;
+}
+
+/**
+ * 互动局势卡:「眼下正在发生什么」的一张小快照,服务陪伴卡与剧情卡双口径。
+ * 三种 delta 语义:省略字段=不更新;null=明确清空;对象=整卡覆盖。
+ * updatedTime 由代码在重放时盖故事内时间,不由 AI 输出。
+ */
+export interface SceneFocus {
+  /** 当前局面一句话(陪伴卡写互动氛围,剧情卡写处境) */
+  situation: string;
+  /** 当前在场参与者 */
+  participants: string[];
+  /** @deprecated 已废弃(与 situation 重叠,不再提示 AI 输出);仅为兼容旧数据保留,有值时仍注入/展示 */
+  currentFocus?: string;
+  /** 互动张力(高门槛,仅明确且持续的社交张力;可选) */
+  tension?: string;
+  /** 即将发生之事(仅正文明确预告/约定/已启动等待结果;禁预测;可选) */
+  pendingBeat?: string;
+  /** 本快照对应的故事内时间(代码盖章) */
+  updatedTime?: string;
+}
+
+/**
+ * 生活小档案一条:主角的偏好/习惯/近期个人状态(如「不吃香菜」「在赶项目死线」)。
+ * 铁律:只记主角明说过/正文明确揭示的,禁止从行为推断。
+ * 三投放层(注入选择,不动真源):pinned 置顶常驻(≤5) / active 时效内相关才注入 / archive 沉降仅关键词触发。
+ */
+export interface MemLifeDetail {
+  /** 稳定 id:detail:${leafId}#${add序号}(重放幂等、手动 op 可稳定引用) */
+  id: string;
+  /** 细节正文一句话 */
+  text: string;
+  /** 主题标签(1-3 个,触发匹配用,如「饮食」「作息」) */
+  topics: string[];
+  /** 关键词锚点(原文可检索词,如「香菜」「项目」) */
+  anchors: string[];
+  /** 投放层:pinned 手动置顶 / active 默认 / archive 已沉降 */
+  tier: 'pinned' | 'active' | 'archive';
+  /** 时效:故事内到期时间(空=长期稳定) */
+  until?: string;
+  /** 记录时的故事内时间 */
+  createdTime?: string;
+  createdAt: number;
+}
+
+/** AI 侧新增生活细节(tier 由代码定为 active,置顶仅手动) */
+export interface LifeDetailAdd {
+  text: string;
+  topics?: string[];
+  anchors?: string[];
+  until?: string;
+}
+
+/** AI 侧更新生活细节(id 可为短序号 d1/d2,finalize 时翻成稳定 id) */
+export interface LifeDetailUpdate {
+  id: string;
+  text?: string;
+  topics?: string[];
+  anchors?: string[];
+  until?: string;
 }
 
 /**
@@ -369,6 +431,8 @@ export interface BaibaiMemory {
   npcs: MemNpc[];
   /** 派生缓存:近期物品变动日志(重放时产出,只留最近若干条) */
   itemLog: ItemLogEntry[];
+  /** 派生缓存:主角生活小档案(从叶子 delta 重放) */
+  lifeDetails: MemLifeDetail[];
   /** 真源镜像:三层变量定义模板(global/char 来自 settings,chat 来自 chatMetadata) */
   varTemplates: Record<VarTier, VarTemplate>;
   /** 派生缓存:变量当前状态(从合并模板起、fold 各叶子 varOps 得到的 JSON 树) */
@@ -380,10 +444,11 @@ export interface BaibaiMemory {
 export function createEmptyMemory(): BaibaiMemory {
   return {
     version: MEMORY_VERSION,
-    state: { time: '', location: '' },
+    state: { time: '', location: '', sceneFocus: null },
     protagonist: {},
     items: [],
     plans: [],
+    lifeDetails: [],
     scenes: [],
     npcs: [],
     itemLog: [],
@@ -500,6 +565,8 @@ export interface SummaryDelta {
   location?: string;
   /** 覆盖型:当前所在的已记录场景节点完整路径(由粗到细);与 location 同时给,作权威定位 */
   locationPath?: string[];
+  /** 局势卡更新:省略=不动;null=明确清空;对象=整卡覆盖 */
+  sceneFocus?: SceneFocus | null;
   /** 覆盖型:用户操控主角的当前客观档案变化 */
   protagonist?: ProtagonistDelta;
   /** 指令型:物品增删改 */
@@ -535,6 +602,15 @@ export interface SummaryDelta {
     /** 按提示词里展示的短 id(p1/p2…)了结,每项带 outcome/reason 说明怎么了结;裸字符串兼容旧格式 */
     resolve?: PlanResolveItem[];
   };
+  /** 指令型:生活小档案增删改(可选;只记主角明说过/明文揭示的) */
+  lifeDetails?: {
+    add?: LifeDetailAdd[];
+    update?: LifeDetailUpdate[];
+    /** 沉降为仅关键词触发(短序号 d1/d2 或稳定 id) */
+    archive?: string[];
+    /** 删除(短序号 d1/d2 或稳定 id) */
+    remove?: string[];
+  };
   /**
    * 指令型:自定义变量的路径命令数组(仿 MVU)。AI 看当前 JSON 状态 + 说明,产出本楼新事件对应的命令:
    *  - { "op":"set", "path":"好感度", "value":60 }
@@ -556,6 +632,8 @@ export interface StoredDelta {
   location?: string;
   /** 覆盖型:当前所在的已记录场景节点完整路径(由粗到细);权威定位 */
   locationPath?: string[];
+  /** 局势卡更新:省略=不动;null=明确清空;对象=整卡覆盖 */
+  sceneFocus?: SceneFocus | null;
   /** 覆盖型:用户操控主角的当前客观档案变化 */
   protagonist?: ProtagonistDelta;
   items?: {
@@ -590,5 +668,14 @@ export interface StoredDelta {
     reopen?: string[];
   };
   /** 自定义变量:本楼的路径命令序列(按顺序 fold 到 JSON 状态)。AI 与手动共用。 */
+  lifeDetails?: {
+    add?: LifeDetailAdd[];
+    /** update 带 tier:手动置顶/恢复操作用(AI 不出 tier) */
+    update?: (LifeDetailUpdate & { tier?: 'pinned' | 'active' | 'archive' })[];
+    /** 沉降为仅关键词触发(稳定 id) */
+    archive?: string[];
+    /** 删除(稳定 id) */
+    remove?: string[];
+  };
   varOps?: VarOp[];
 }

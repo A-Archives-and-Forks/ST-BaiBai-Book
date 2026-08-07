@@ -1017,7 +1017,8 @@ function applyLeafForFloor(
 
   // 未了结计划的有序列表:顺序即提示词里的 p1/p2…,用于把 resolve 短序号翻译成稳定 id
   const openPlansOrdered = stateBefore.plans.filter(p => p.status === 'open');
-  const storedDelta = finalizeDelta(delta, openPlansOrdered);
+  // 生活小档案当前列表:顺序即提示词里的 d1/d2…,用于把 update/archive/remove 短序号翻译成稳定 id
+  const storedDelta = finalizeDelta(delta, openPlansOrdered, stateBefore.lifeDetails);
 
   // 时间起止:标签优先(与新剧情同源不漂移);标签缺的那端用 AI 补的 timeStart/timeEnd 兜底。
   const timeStart = tag.start || llmOptionalScalar(delta.timeStart) || undefined;
@@ -1093,6 +1094,8 @@ async function summarizeFloorWork(
     char: ctx.name2,
     time: stateBefore.state.time,
     location: stateBefore.state.location,
+    sceneFocus: stateBefore.state.sceneFocus,
+    lifeDetails: apiSettings.lifeDetailsEnabled ? stateBefore.lifeDetails : [],
     protagonist: stateBefore.protagonist,
     items: stateBefore.items.map(i => ({ name: i.name, qty: i.qty, desc: i.desc, carried: i.carried, location: i.location })),
     itemLog: stateBefore.itemLog,

@@ -61,6 +61,7 @@ export function recomputeDerived(): void {
   memory.state.time = d.state.time;
   memory.state.location = d.state.location;
   memory.state.locationPath = d.state.locationPath;
+  memory.state.sceneFocus = d.state.sceneFocus;
   // 年龄(age+ageTime 锚点对)也在 protagonist 上,漏拷会让 UI/注入永远读不到主角年龄
   for (const key of ['gender', 'age', 'ageTime', 'identity', 'appearance', 'outfit', 'condition'] as const) {
     memory.protagonist[key] = d.protagonist[key];
@@ -70,6 +71,7 @@ export function recomputeDerived(): void {
   memory.scenes.splice(0, memory.scenes.length, ...d.scenes);
   memory.npcs.splice(0, memory.npcs.length, ...d.npcs);
   memory.itemLog.splice(0, memory.itemLog.length, ...d.itemLog);
+  memory.lifeDetails.splice(0, memory.lifeDetails.length, ...d.lifeDetails);
   // vars 是 JSON 对象:清空后按派生结果重填(不换 reactive 引用,保持页面响应式绑定)
   for (const k of Object.keys(memory.vars)) delete memory.vars[k];
   Object.assign(memory.vars, d.vars);

@@ -4,11 +4,12 @@ import Icon from '@/components/Icon.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import SummaryOnlyNotice from '@/components/SummaryOnlyNotice.vue';
-import { classifyNpcPresence, editNpc, removeNpc, setNpcFollow, setNpcImportant, setProtagonist, upsertNpc } from '@/memory/apply';
+import { classifyNpcPresence, editNpc, removeNpc, setNpcFollow, setNpcImportant, setProtagonist, upsertNpc, addLifeDetail, removeLifeDetail, updateLifeDetail } from '@/memory/apply';
 import { derivedMeta, memory } from '@/memory/store';
 import { ageDisplay } from '@/memory/timeRel';
-import type { MemNpc } from '@/memory/types';
+import type { MemLifeDetail, MemNpc } from '@/memory/types';
 import { getContext } from '@/st/context';
+import { toast } from '@/st/toast';
 import { computed, nextTick, ref } from 'vue';
 
 // NPC 是从叶子摘要重放出的派生数据,手动操作写入「最新一条有效叶子」;无有效叶子时无处挂载。
@@ -67,6 +68,86 @@ function saveProtagonistEdit() {
   // 年龄没改时带上旧锚点,防止重放把锚点刷成「此刻」(等于错误冻龄);真改了才留给重放盖新锚点
   const ageTime = draft.age.trim() && draft.age.trim() === memory.protagonist.age ? memory.protagonist.ageTime : undefined;
   if (setProtagonist({ ...draft, ageTime })) protagonistEditing.value = null;
+}
+
+/* —— 生活小档案(三投放层:置顶常驻 / 时效相关浮现 / 沉降仅触发)—— */
+const lifeGroups = computed(() => {
+  const pinned: MemLifeDetail[] = [];
+  const active: MemLifeDetail[] = [];
+  const archive: MemLifeDetail[] = [];
+  for (const d of memory.lifeDetails) {
+    (d.tier === 'pinned' ? pinned : d.tier === 'archive' ? archive : active).push(d);
+  }
+  return { pinned, active, archive };
+});
+/* 列表顺序 = 置顶 → 时效/长期 → 沉降;层级差异交给卡片样式表达(置顶金条/沉降虚线),不再挂分组标题 */
+const lifeList = computed(() => [...lifeGroups.value.pinned, ...lifeGroups.value.active, ...lifeGroups.value.archive]);
+
+/* —— 生活小档案折叠:与摘要页计划/悬念同款。折叠态是本机视图偏好,走 localStorage、不进 apiSettings —— */
+const LIFE_COLLAPSE_KEY = 'bbs.ui.lifeCollapsed.v1';
+function loadCollapsed(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+function persistCollapsed(key: string, v: boolean) {
+  try {
+    localStorage.setItem(key, v ? '1' : '0');
+  } catch {
+    /* localStorage 不可用时仅本次会话生效 */
+  }
+}
+const lifeCollapsed = ref(loadCollapsed(LIFE_COLLAPSE_KEY));
+// 无条目即无可折叠:不显示箭头,也强制展开(避免删空后卡在收拢的空态)
+const lifeFoldable = computed(() => memory.lifeDetails.length > 0);
+const lifeShown = computed(() => !lifeCollapsed.value || !lifeFoldable.value);
+function toggleLifeFold() {
+  lifeCollapsed.value = !lifeCollapsed.value;
+  persistCollapsed(LIFE_COLLAPSE_KEY, lifeCollapsed.value);
+}
+
+const LIFE_PIN_CAP = 5;
+function toggleDetailPin(d: MemLifeDetail) {
+  if (d.tier === 'pinned') {
+    updateLifeDetail(d.id, { tier: 'active' });
+    return;
+  }
+  if (lifeGroups.value.pinned.length >= LIFE_PIN_CAP) {
+    toast(`置顶最多 ${LIFE_PIN_CAP} 条,先取消一条再置顶`, 'warning');
+    return;
+  }
+  updateLifeDetail(d.id, { tier: 'pinned' });
+}
+function toggleDetailArchive(d: MemLifeDetail) {
+  updateLifeDetail(d.id, { tier: d.tier === 'archive' ? 'active' : 'archive' });
+}
+function removeDetail(d: MemLifeDetail) {
+  removeLifeDetail(d.id);
+}
+
+/* 生活细节 添加/编辑弹窗 */
+const detailEditing = ref<{ id: string | null; text: string; topics: string; anchors: string; until: string } | null>(null);
+function openDetailComposer() {
+  detailEditing.value = { id: null, text: '', topics: '', anchors: '', until: '' };
+}
+function openDetailEdit(d: MemLifeDetail) {
+  detailEditing.value = { id: d.id, text: d.text, topics: d.topics.join('/'), anchors: d.anchors.join('/'), until: d.until ?? '' };
+}
+function cancelDetailEdit() {
+  detailEditing.value = null;
+}
+function saveDetailEdit() {
+  const e = detailEditing.value;
+  if (!e || !e.text.trim()) return;
+  const topics = e.topics.split(/[\/、,，]/).map(s => s.trim()).filter(Boolean).slice(0, 3);
+  const anchors = e.anchors.split(/[\/、,，]/).map(s => s.trim()).filter(Boolean).slice(0, 5);
+  const until = e.until.trim();
+  const ok = e.id
+    ? updateLifeDetail(e.id, { text: e.text.trim(), topics, anchors, until })
+    : addLifeDetail({ text: e.text.trim(), topics, anchors, until: until || undefined });
+  if (ok) detailEditing.value = null;
 }
 
 // 触屏判定:跳过弹窗自动聚焦(移动端自动聚焦会弹输入法挡界面),与场景/摘要页一致。
@@ -245,6 +326,73 @@ function confirmRemove() {
     <SummaryOnlyNotice subject="主角档案、NPC 名册与角色状态" />
 
     <hr class="bbs-rule" />
+
+    <!-- ===== 生活小档案:主角的偏好/习惯/近期状态(三投放层)。置于主角卡之上且可折叠,不打断下方角色卡流 ===== -->
+    <div v-if="apiSettings.lifeDetailsEnabled" class="bbs-protagonist-section">
+      <div class="bbs-npc-grouphead">
+        <button
+          class="bbs-fold-head"
+          type="button"
+          :class="{ 'is-static': !lifeFoldable }"
+          :disabled="!lifeFoldable"
+          :aria-expanded="lifeShown"
+          :title="lifeFoldable ? (lifeShown ? '收起生活小档案' : '展开生活小档案') : ''"
+          @click="toggleLifeFold"
+        >
+          <Icon v-if="lifeFoldable" name="chevron" class="bbs-fold-caret" :class="{ 'is-collapsed': !lifeShown }" />
+          <h2 class="bbs-life-title" title="置顶条常驻发送;时效/长期条按相关性浮现;沉降条仅关键词触发">生活小档案</h2>
+          <span v-if="lifeFoldable" class="bbs-fold-count">{{ memory.lifeDetails.length }}</span>
+        </button>
+        <span v-if="apiSettings.summaryOnlyMode" class="bbs-npc-grouphint is-local-only">仅供柏宝书记录,不发送给主对话 AI</span>
+        <button
+          class="bbs-add-mini"
+          type="button"
+          :disabled="!hasLeaf"
+          :title="hasLeaf ? '手动添加生活细节' : '需先有摘要才能手动添加'"
+          @click="openDetailComposer"
+        >
+          <Icon name="plus" />
+        </button>
+      </div>
+      <!-- grid 1fr↔0fr 收展:高度自适应、无需写死 max-height;reduced-motion 下瞬切(见样式) -->
+      <div class="bbs-fold-wrap" :class="{ 'is-collapsed': !lifeShown }">
+        <div class="bbs-fold-inner">
+          <div v-if="lifeList.length" class="bbs-life-group">
+            <article v-for="d in lifeList" :key="d.id" class="bbs-life" :class="`is-${d.tier}`">
+              <div class="bbs-life-main">
+                <p class="bbs-life-text">{{ d.text }}</p>
+                <div v-if="d.topics.length || d.until" class="bbs-life-meta">
+                  <span v-if="d.topics.length" class="bbs-life-tag">{{ d.topics.join(' / ') }}</span>
+                  <span v-if="d.until" class="bbs-life-until">至 {{ d.until }}</span>
+                </div>
+              </div>
+              <span class="bbs-npc-acts">
+                <button
+                  class="bbs-item-act"
+                  :class="{ active: d.tier === 'pinned' }"
+                  type="button"
+                  :title="d.tier === 'pinned' ? '取消置顶' : '置顶(常驻发送,最多5条)'"
+                  @click="toggleDetailPin(d)"
+                >
+                  <Icon name="pin" />
+                </button>
+                <button
+                  class="bbs-item-act"
+                  type="button"
+                  :title="d.tier === 'archive' ? '恢复为时效层' : '沉降(仅相关时浮现)'"
+                  @click="toggleDetailArchive(d)"
+                >
+                  <Icon :name="d.tier === 'archive' ? 'upload' : 'download'" />
+                </button>
+                <button class="bbs-item-act" type="button" title="编辑" @click="openDetailEdit(d)"><Icon name="edit" /></button>
+                <button class="bbs-item-act bbs-item-del" type="button" title="删除" @click="removeDetail(d)"><Icon name="trash" /></button>
+              </span>
+            </article>
+          </div>
+          <p v-if="!memory.lifeDetails.length" class="bbs-npc-mainhint">尚无生活细节。摘要会在主角明说偏好/习惯/近况时记下(只记明说过的),也可手动添加。</p>
+        </div>
+      </div>
+    </div>
 
     <div class="bbs-protagonist-section">
       <div class="bbs-npc-grouphead">
@@ -505,6 +653,36 @@ function confirmRemove() {
         <footer class="bbs-modal-foot">
           <button class="bbs-btn" type="button" @click="cancelProtagonistEdit">取消</button>
           <button class="bbs-btn bbs-btn-primary" type="button" @click="saveProtagonistEdit">保存</button>
+        </footer>
+      </div>
+    </ModalMask>
+
+    <!-- 生活细节 添加/编辑弹窗 -->
+    <ModalMask :open="!!detailEditing" @close="cancelDetailEdit">
+      <div v-if="detailEditing" class="bbs-modal" role="dialog" aria-modal="true" aria-label="生活细节">
+        <header class="bbs-modal-head">
+          <span class="bbs-modal-title">{{ detailEditing.id ? '编辑生活细节' : '添加生活细节' }}</span>
+          <button class="bbs-item-act" type="button" title="关闭" @click="cancelDetailEdit"><Icon name="close" /></button>
+        </header>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">细节内容(主角明说过的偏好/习惯/近期状态)</span>
+          <textarea v-model="detailEditing.text" v-autosize class="bbs-input bbs-modal-textarea bbs-modal-autogrow" rows="1" placeholder="如:不吃香菜 / 最近在赶项目死线"></textarea>
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">主题标签(可选,1-3 个,斜杠分隔)</span>
+          <input v-model="detailEditing.topics" class="bbs-input" type="text" placeholder="如 饮食/作息/工作" />
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">关键词(可选,触发匹配用,斜杠分隔)</span>
+          <input v-model="detailEditing.anchors" class="bbs-input" type="text" placeholder="如 香菜/项目/死线" />
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">时效(可选,故事内到期时间;长期偏好留空)</span>
+          <input v-model="detailEditing.until" class="bbs-input" type="text" placeholder="如 1988/10/1;留空=长期稳定" />
+        </label>
+        <footer class="bbs-modal-foot">
+          <button class="bbs-btn" type="button" @click="cancelDetailEdit">取消</button>
+          <button class="bbs-btn bbs-btn-primary" type="button" :disabled="!detailEditing.text.trim()" @click="saveDetailEdit">保存</button>
         </footer>
       </div>
     </ModalMask>
@@ -1021,5 +1199,154 @@ function confirmRemove() {
 }
 .bbs-empty {
   flex: 1;
+}
+
+/* —— 生活小档案 —— */
+/* 区块标题:与摘要页区块标题同款的普通小标题字,不用药丸题签 */
+.bbs-life-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--bbs-ink);
+}
+.bbs-npc-grouphead .bbs-add-mini {
+  margin-left: auto;
+}
+/* —— 折叠头/容器:与摘要页计划/悬念折叠同款。标题行整体可点:左箭头 + 题签 + 金色计数标 —— */
+.bbs-fold-head {
+  flex: 0 0 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+/* 无可折叠(零条目)时退化为普通标题:不是按钮观感、光标默认 */
+.bbs-fold-head.is-static {
+  cursor: default;
+}
+/* 折叠箭头:展开朝下,收拢转 -90° 朝右;hover 整行才点亮强调色 */
+.bbs-fold-caret {
+  flex: 0 0 auto;
+  color: var(--bbs-ink-muted);
+  transition: transform 0.2s ease, color 0.15s;
+}
+.bbs-fold-caret.is-collapsed {
+  transform: rotate(-90deg);
+}
+.bbs-fold-head:hover:not(.is-static) .bbs-fold-caret,
+.bbs-fold-head:focus-visible .bbs-fold-caret {
+  color: var(--bbs-accent);
+}
+/* 计数标:金底描边小药丸,始终显示;收拢时尤其有用——点明藏了多少条 */
+.bbs-fold-count {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--bbs-accent);
+  background: var(--bbs-accent-soft);
+  border: 1px solid var(--bbs-accent);
+  border-radius: var(--bbs-radius-pill);
+  padding: 1px 9px;
+  font-variant-numeric: tabular-nums;
+}
+/* —— 可收展容器:grid 1fr↔0fr,高度随内容自适应,无需写死 max-height —— */
+.bbs-fold-wrap {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.24s ease;
+}
+.bbs-fold-wrap.is-collapsed {
+  grid-template-rows: 0fr;
+}
+/* min-height:0 + overflow:hidden 才能让 0fr 真正压到零高 */
+.bbs-fold-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bbs-fold-caret,
+  .bbs-fold-wrap {
+    transition: none;
+  }
+}
+
+.bbs-life-group {
+  margin-top: 8px;
+}
+/* 一条细节:与 NPC 卡同族的卡片容器(主题描边/圆角/纸面) */
+.bbs-life {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--bbs-line);
+  border-radius: var(--bbs-radius);
+  background: var(--bbs-surface);
+  margin-bottom: 6px;
+  overflow: hidden; /* 让置顶色条贴着圆角边缘 */
+}
+/* 置顶:左缘一道金色条,呼应角色卡「在场」、点明「常驻发送」 */
+.bbs-life.is-pinned::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--bbs-accent);
+  opacity: 0.5;
+}
+/* 沉降:虚线框 + 压暗,呼应角色卡「不在场」的弱化 */
+.bbs-life.is-archive {
+  background: transparent;
+  border-style: dashed;
+}
+.bbs-life.is-archive .bbs-life-text {
+  color: var(--bbs-ink-soft);
+}
+.bbs-life-main {
+  flex: 1;
+  min-width: 0;
+}
+.bbs-life-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--bbs-ink);
+  word-break: break-word;
+}
+.bbs-life-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+/* 主题/时效小签:与计划卡时间签同款的描边小标签 */
+.bbs-life-tag,
+.bbs-life-until {
+  font-size: 10.5px;
+  line-height: 1.5;
+  padding: 1px 7px;
+  border-radius: var(--bbs-radius-sm);
+  border: 1px solid var(--bbs-line);
+  background: var(--bbs-surface-2);
+  color: var(--bbs-ink-muted);
+}
+.bbs-life-until {
+  color: var(--bbs-accent);
+  background: var(--bbs-accent-soft);
+  border-color: color-mix(in srgb, var(--bbs-accent) 40%, transparent);
+}
+.bbs-life .bbs-npc-acts {
+  flex-shrink: 0;
+}
+.bbs-item-act.active {
+  color: var(--bbs-accent);
 }
 </style>

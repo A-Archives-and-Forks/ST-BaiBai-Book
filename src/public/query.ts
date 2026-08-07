@@ -140,6 +140,7 @@ export function getSnapshot(options?: SnapshotOptions): PublicSnapshot {
     scenes: derived.scenes,
     npcs: derived.npcs,
     itemLog: derived.itemLog,
+    lifeDetails: derived.lifeDetails,
   });
 }
 

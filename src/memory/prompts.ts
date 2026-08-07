@@ -17,7 +17,7 @@
 import { apiSettings, type Verbosity } from '@/api/settings';
 import { fmtNpcSummaryList } from './npcRelations';
 import { RULE_COMPLETE_TIME_ANCHOR } from './timeTag';
-import type { ItemLogEntry, JsonValue, MemPlan, MemProtagonist, PlanOutcome } from './types';
+import type { ItemLogEntry, JsonValue, MemLifeDetail, MemPlan, MemProtagonist, PlanOutcome, SceneFocus } from './types';
 
 /** 一个可用占位符(宏):token 用于插入,desc 给用户看「这里会替换成什么」。 */
 export interface PromptMacro {
@@ -206,12 +206,42 @@ export const RULE_NPCS = `═══ 【NPC 规则】(npcs 字段,极严筛选) �
 【何时更新(update)】
   ✦ 档案层(title/desc/personality):只在**发生实质变化**或**首次补全**时更新;普通互动、对话不更新。update 的 desc/title 是整体覆盖,要写累积后的完整内容,别丢旧要点。
   ✦ 即时层(outfit/condition):门槛低,正文描写了换装/受伤/状态变化就 update,这是它存在的意义。
+  ✦ 清空语义:outfit/condition 省略=保持旧值;填空字符串=明确清空(伤势痊愈、状态恢复正常、不再描述当前着装时务必清空,不要让旧状态永久残留)。
 【主要角色的离场演变(唯一允许的合理推演,务必克制)】
   ✦ 通常铁律是「只记正文明写的」。**唯一例外**:对**主要角色**的**即时层**(outfit/location/condition),当其与主角分开**已明显跨越时间**(隔了数日、一场长旅程、一次大事件)后再登场或被提及时,允许你**合理推演**其状态的自然演变并 update —— 例如多日未见多半已换装、可能已移动到别处、伤势已痊愈或恶化。
   ✦ 目的:避免「两人分开两天重逢,对方还穿着分别时那套、伤还没好」这种僵化。
   ✦ 严格边界:此推演**仅限主要角色、仅限 outfit/location/condition 三个覆盖型字段**;**绝不可**外溢到 summary 正文、items、计划,也不可用于普通配角——那些仍严格只记正文明写,禁止脑补。推演要符合常理、点到为止,不要编造具体剧情事件。
 【退场(remove)】NPC 永久退场(死亡、彻底离开剧情且不会再出现)才 remove;只是暂时分开、去了别处用 location/follow 表达,不要 remove。
 【复用已有,严禁重复】上方【已登场NPC】是已记录名册。同一角色务必复用既有名字,不要换个叫法再记一遍;已在名册里且无变化 → 不输出 npcs。`;
+
+/** 互动局势卡规则(sceneFocus 字段)。 */
+export const RULE_SCENE_FOCUS = `═══ 【互动局势卡规则】(sceneFocus 字段,覆盖型单对象) ═══
+它是「眼下正在发生什么」的一小张快照,帮写作 AI 衔接当下场面。整卡覆盖语义,默认不动:
+  ✦ 省略 sceneFocus = 保持上一张;写 null = 明确清空(场面彻底结束/章节落幕才用)。
+  ✦ 要写就写完整一张卡(不是补丁):situation + participants 必填,其余可选。
+【更新时机】满足任一才更新,否则省略:
+  ✓ 场面/在场人实质切换(换场地、有人进场离场、从闲聊转入正题)
+  ✓ 当前活动实质转移(开始商量新的事、进入新活动)
+  ✓ 互动张力出现或解除(开始冷战、气氛缓和)
+  ✗ 同一局面里的普通推进(一句话一个动作)不更新——那是 summary 的事。
+【字段口径】
+  ✦ situation:当前局面一句话,客观描述,可在句中自然带出此刻围绕什么进行。陪伴/日常剧情写互动氛围(「午后同居日常,她情绪有点低落,正教 {{user}} 做菜」);剧情向写处境(「潜行中,刚被巡逻队发现」)。
+  ✦ participants:当前在场参与者(含主角,用 {{user}})。
+  ✦ tension:互动张力,高门槛。只有明确的、正在持续的社交张力才写(冷战/尴尬/暧昧暗涌);一时的语气变化、普通情绪波动不写。无则省略。
+  ✦ pendingBeat:即将发生之事,仅限正文明确预告/约定/已启动等待结果的(「她刚起身说去开门」)。禁止预测未发生剧情;无则省略。
+【克制】本卡与 tension 是写给写作 AI 的隐性氛围约束(别在冷战时写成腻歪),不是点名要求;正文自然体现即可,严禁复述或点破本卡内容。`;
+
+/** 生活小档案规则(lifeDetails 字段)。 */
+export const RULE_LIFE_DETAILS = `═══ 【生活小档案规则】(lifeDetails 字段,极严筛选) ═══
+记录**主角**的偏好/习惯/近期个人状态(如「不吃香菜」「在赶项目死线」),帮写作 AI 在相关时自然贴合。
+【铁律:只认主角自己明说过、或正文明确揭示的】禁止从行为/语气推断偏好与内心;NPC 的细节不记这里(那是 npcs 的事)。
+【默认不记】先对照上方【主角生活小档案】查重,已有同义条目一律不重复 add。
+【add】topics 填 1-3 个主题标签(饮食/作息/工作…),anchors 填原文可检索的关键词(香菜/项目…),供系统按相关性投放;until 填故事内到期时间表示有时效(如项目结束日),长期稳定偏好 until 留空。
+【update/archive/remove】用编号 d1、d2… 指代上方列表:
+  ✦ 条目被正文明确推翻/纠正 → update 改 text;
+  ✦ 时效已过/不再相关 → archive(沉降为仅触发,不是删除);
+  ✦ 记错了 → remove。拿不准不动。
+【克制】这些细节仅作写作时的贴合参考,不是写作任务;严禁在 summary 里逐条罗列。`;
 
 /** 计划/悬念规则(plans 字段)。 */
 export const RULE_PLANS = `═══ 【计划/悬念规则】(plans 字段) ═══
@@ -312,7 +342,9 @@ export const SUMMARY_PROMPT = `你是严谨的剧情记忆整理员。请阅读�
 【当前已知状态(该楼层之前的已知信息,只读参考,不要视为本轮新增事实)】
 - 当前时间:{{state_time}}
 - 当前地点:{{state_location}}
-- 主角当前档案(覆盖到该楼之前;只读参考):
+- 当前互动局势(上一张局势卡,只读参考 —— 见下方【互动局势卡规则】):
+{{scenefocus_block}}
+{{lifedetails_block}}- 主角当前档案(覆盖到该楼之前;只读参考):
 {{protagonist_block}}
 - 现有物品:
 {{items_block}}
@@ -339,6 +371,7 @@ ${RULE_LONGTERM_DB}
 {{time_field}}
   "location": "本轮结束时主角所在地点(有变化才写,可写得很细,如「滨江区某老小区-302室屋内」)",
   "locationPath": ["在【已知地点】里、与上面 location 对应的场景节点完整路径,由粗到细(可比 location 粗)。给了 location 就尽量给它,作精确定位"],
+  "sceneFocus": { "situation": "当前局面一句话", "participants": ["在场参与者名"], "tension": "互动张力(可选,高门槛)", "pendingBeat": "正文明确预告的即将发生之事(可选,禁预测)" },
   "protagonist": {
     "gender": "主角明确的性别/性别表现(有新增或变化才写)",
     "age": "主角年龄(仅首次明确或明确变化才写,写原话值,勿自行按时间换算)",
@@ -359,13 +392,13 @@ ${RULE_LONGTERM_DB}
   },
   "npcs": {
     "add": [{ "name": "NPC名", "gender": "性别(如「男」「女」,首次记录务必填)", "age": "年龄(正文明确才填,写原话值,勿换算)", "relation": "与主角的关系:称谓在前+一句态度(如「主角的师姐,明面冷淡暗中维护」)", "ties": "与其他角色的重要关系(仅血缘/婚姻/宿敌等长期结构,可选)", "title": "身份/职业一句话", "desc": "固定外貌:发色/身材/疤痕等长期特征,勿写当下穿着(可选)", "personality": "性格(可选)", "outfit": "当前着装(可选,即时层)", "condition": "当前状态/健康,如受伤/疲惫(可选,即时层)", "important": "核心主演填true(可选)", "location": "所在地点(定点NPC)", "follow": "随行同伴填true(可选)" }],
-    "update": [{ "name": "已有NPC名", "gender": "补填性别(可选)", "age": "补填或正文明确纠正后的年龄(可选,勿按时间流逝自行换算)", "relation": "质变后的新关系(可选,称谓在前;仅限明确说出/约定/无歧义客观事件,吵架冷战不算)", "ties": "更新后的完整人际关系(可选,整体覆盖)", "title": "新身份(可选)", "desc": "新固定外貌(可选)", "personality": "新性格(可选)", "outfit": "换装后的当前着装(可选)", "condition": "变化后的状态(可选)", "important": "升/降主要角色true/false(可选)", "location": "新所在地(可选)", "follow": "随行true/离队false(可选)" }],
+    "update": [{ "name": "已有NPC名", "gender": "补填性别(可选)", "age": "补填或正文明确纠正后的年龄(可选,勿按时间流逝自行换算)", "relation": "质变后的新关系(可选,称谓在前;仅限明确说出/约定/无歧义客观事件,吵架冷战不算)", "ties": "更新后的完整人际关系(可选,整体覆盖)", "title": "新身份(可选)", "desc": "新固定外貌(可选)", "personality": "新性格(可选)", "outfit": "换装后的当前着装(可选;空字符串=清空)", "condition": "变化后的状态(可选;痊愈/恢复正常填空字符串清空)", "important": "升/降主要角色true/false(可选)", "location": "新所在地(可选)", "follow": "随行true/离队false(可选)" }],
     "remove": ["永久退场的已有NPC名"]
   },
   "plans": {
     "add": [{ "kind": "plan", "content": "新出现的计划/目标", "createdTime": "立计划时的故事内时间", "targetTime": "打算完成的目标时间(见下)" }, { "kind": "suspense", "content": "正文明确留下的待揭晓事实,或已经启动且等待结果的外部事件", "createdTime": "悬念出现时的故事内时间" }],
     "resolve": [{ "id": "p1", "outcome": "done|cancelled|failed", "reason": "一句话:为什么/如何了结(见下方【核销/了结】)" }]
-  }{{vars_field}}
+  }{{lifedetails_field}}{{vars_field}}
 }
 
 {{time_rule}}
@@ -379,7 +412,9 @@ ${RULE_SCENES}
 ${RULE_NPCS}
 
 ${RULE_PLANS}
-{{vars_rule}}
+
+${RULE_SCENE_FOCUS}
+{{lifedetails_rule}}{{vars_rule}}
 ${RULE_SUMMARY_WRITE}
 
 【输出铁律】
@@ -596,6 +631,10 @@ interface BuildArgs {
   location: string;
   /** 用户操控主角的当前客观档案 */
   protagonist: MemProtagonist;
+  /** 当前互动局势(上一张局势卡,覆盖到该楼之前;只读参考,null=无) */
+  sceneFocus: SceneFocus | null;
+  /** 主角生活小档案(当前已记录;供查重与 d 序号指代;空数组且功能关闭时提示词整块省略) */
+  lifeDetails: MemLifeDetail[];
   /** 现有物品名列表 */
   items: { name: string; qty?: number; desc?: string; carried?: boolean; location?: string }[];
   /** 近期物品变动日志(已结算的账,防重复结算用) */
@@ -817,6 +856,32 @@ export function fmtPlans(plans: BuildArgs['openPlans']): string {
     .join('\n');
 }
 
+/** 局势卡渲染给副 API(只读参考,单行内联)。null → (无)。 */
+export function fmtSceneFocus(f: SceneFocus | null): string {
+  if (!f) return '  (无)';
+  const bits: string[] = [`局面:${oneLine(f.situation)}`];
+  const who = f.participants.map(oneLine).filter(Boolean).join('、');
+  if (who) bits.push(`在场:${who}`);
+  if (f.currentFocus) bits.push(`焦点:${oneLine(f.currentFocus)}`);
+  if (f.tension) bits.push(`张力:${oneLine(f.tension)}`);
+  if (f.pendingBeat) bits.push(`将发生:${oneLine(f.pendingBeat)}`);
+  return `  ${bits.join(' | ')}`;
+}
+
+/** 生活小档案渲染给副 API(编号 d1/d2… 供 update/archive/remove 指代)。 */
+export function fmtLifeDetails(details: MemLifeDetail[]): string {
+  if (!details.length) return '  (无)';
+  return details
+    .map((d, idx) => {
+      const tierLabel = d.tier === 'pinned' ? '置顶' : d.tier === 'archive' ? '沉降' : d.until ? `时效·至${oneLine(d.until)}` : '长期';
+      const meta: string[] = [];
+      if (d.topics.length) meta.push(`主题:${d.topics.map(oneLine).filter(Boolean).join('/')}`);
+      if (d.anchors.length) meta.push(`词:${d.anchors.map(oneLine).filter(Boolean).join('/')}`);
+      return `  d${idx + 1}. [${tierLabel}] ${oneLine(d.text)}${meta.length ? ` (${meta.join(' | ')})` : ''}`;
+    })
+    .join('\n');
+}
+
 function fill(tpl: string, map: Record<string, string>): string {
   return tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => map[k] ?? '');
 }
@@ -885,6 +950,30 @@ const TIME_ANCHOR_PROTOCOL_SUPPLEMENT = `【柏宝书时间锚点兼容协议】
 
 ${RULE_COMPLETE_TIME_ANCHOR}`;
 
+/** 自定义摘要可能没提局势卡;补充 sceneFocus 字段协议(可选字段,不破坏旧模板)。 */
+const SCENE_FOCUS_PROTOCOL_SUPPLEMENT = `【柏宝书互动局势卡兼容协议】
+最终 JSON 根对象可增加一个可选字段(没有实质变化就不要输出它):
+{
+  "sceneFocus": { "situation": "当前局面一句话", "participants": ["在场参与者名"], "tension": "互动张力(可选,高门槛)", "pendingBeat": "正文明确预告的即将发生之事(可选,禁预测)" }
+}
+省略表示保持上一张;写 null 表示明确清空。
+
+${RULE_SCENE_FOCUS}`;
+
+/** 自定义摘要可能没提生活小档案;补充 lifeDetails 字段协议(可选字段,不破坏旧模板)。 */
+const LIFE_DETAILS_PROTOCOL_SUPPLEMENT = `【柏宝书生活小档案兼容协议】
+最终 JSON 根对象可增加一个可选字段(没有可记的就不要输出它):
+{
+  "lifeDetails": {
+    "add": [{ "text": "主角明说过的偏好/习惯/近期状态一句话", "topics": ["主题标签"], "anchors": ["原文关键词"], "until": "故事内到期时间(长期偏好留空,可选)" }],
+    "update": [{ "id": "d1", "text": "纠正后的新内容(可选)" }],
+    "archive": ["d2"],
+    "remove": ["d3"]
+  }
+}
+
+${RULE_LIFE_DETAILS}`;
+
 /** 构造楼层摘要提示词。自定义模板也强制追加主角档案协议与摘要时间语言铁律。 */
 export function buildSummaryPrompt(a: BuildArgs): string {
   const custom = apiSettings.prompts.summary.trim();
@@ -902,6 +991,12 @@ export function buildSummaryPrompt(a: BuildArgs): string {
     npcs_block: fmtNpcs(a.npcs),
     plans_block: fmtPlans(a.openPlans),
     resolved_plans_block: fmtResolvedPlans(a.resolvedPlans),
+    scenefocus_block: fmtSceneFocus(a.sceneFocus),
+    lifedetails_block: apiSettings.lifeDetailsEnabled
+      ? `- 主角生活小档案(已记录,用编号 d1/d2… 指代;只读参考,勿重复记录 —— 见下方【生活小档案规则】):\n${fmtLifeDetails(a.lifeDetails)}\n`
+      : '',
+    lifedetails_field: apiSettings.lifeDetailsEnabled ? LIFE_DETAILS_FIELD_TMPL : '',
+    lifedetails_rule: apiSettings.lifeDetailsEnabled ? `\n${RULE_LIFE_DETAILS}\n` : '',
     content: a.content,
     time_field: a.hasTimeTags ? TIME_FIELD_WITH_TAGS : TIME_FIELD_NO_TAGS,
     time_rule: a.hasTimeTags ? TIME_RULE_WITH_TAGS : TIME_RULE_NO_TAGS,
@@ -920,7 +1015,8 @@ export function buildSummaryPrompt(a: BuildArgs): string {
   };
   const prompt = fill(tpl, macros);
   if (!custom) return prompt;
-  const supplements = [fill(PROTAGONIST_PROTOCOL_SUPPLEMENT, macros), RULE_ABSOLUTE_TIME_LANGUAGE];
+  const supplements = [fill(PROTAGONIST_PROTOCOL_SUPPLEMENT, macros), RULE_ABSOLUTE_TIME_LANGUAGE, SCENE_FOCUS_PROTOCOL_SUPPLEMENT];
+  if (apiSettings.lifeDetailsEnabled) supplements.push(LIFE_DETAILS_PROTOCOL_SUPPLEMENT);
   // {{time_rule}} 在无时间标签时本身已经带有完整时间协议;
   // 只有自定义模板没有带入它时,才追加兼容协议,避免完整时间要求重复注入。
   if (!a.hasTimeTags && !prompt.includes('【完整时间锚点格式(系统强制)】')) {
@@ -937,6 +1033,15 @@ function hasVars(a: BuildArgs): boolean {
 /** vars 字段的 JSON 模板片段(接在 plans 之后,故带前导逗号)。命令数组,见【自定义变量规则】。 */
 const VARS_FIELD_TMPL = `,
   "vars": [ { "op": "set|add|assign|remove", "path": "点/括号路径", "key": "assign/remove 用(可选)", "value": "set/assign 用(可选)", "delta": "add 用的数字(可选)" } ]`;
+
+/** 生活小档案字段的 JSON 模板片段(接在 plans 之后,故带前导逗号)。仅 lifeDetailsEnabled 时注入。 */
+const LIFE_DETAILS_FIELD_TMPL = `,
+  "lifeDetails": {
+    "add": [{ "text": "主角明说过的偏好/习惯/近期状态一句话", "topics": ["主题标签,1-3个"], "anchors": ["原文关键词"], "until": "故事内到期时间(长期偏好留空,可选)" }],
+    "update": [{ "id": "d1", "text": "纠正后的新内容(可选)", "topics": ["新标签(可选,整体覆盖)"], "anchors": ["新关键词(可选,整体覆盖)"], "until": "新时效(可选;空字符串=清除)" }],
+    "archive": ["d2"],
+    "remove": ["d3"]
+  }`;
 
 /**
  * 批量摘要的参数。批量只产 summary + 起止时间,故不传物品/计划(避免多楼顺序错乱)——
@@ -1069,6 +1174,14 @@ export const THINKING_CHECKLIST = `【输出前思考】
    - 只记客观明文事实,不从言行推断性格、偏好、情绪或内心;不要把 persona 整份抄入。
    - 伤势痊愈、异常状态解除等需要清旧值时,对应字段写空字符串;无变化则不输出 protagonist。
 
+1c. 局势盘点(对照【当前互动局势】)
+   - 本楼场面/在场人/互动张力有无实质变化?有→整卡重写 sceneFocus;无→省略。
+   - 场面彻底结束(章节落幕)→ sceneFocus 写 null;普通推进不要动它。
+
+1d. 生活细节盘点(对照【主角生活小档案】)
+   - 本楼主角是否明说了自己的偏好/习惯/近期个人状态(饮食忌口、作息、在忙的事)?有且未记录过 → lifeDetails.add(带主题/关键词;长期偏好 until 留空)。
+   - 已有条目被正文明确推翻/时效已过 → update/archive/remove(用 d 序号)。NPC 的细节记 npcs,不进这里。
+
 2. 物品清点(对照【现有物品】逐一核对)
    - 本楼有无角色主动获取/消耗/丢弃、且符合记录标准的物品?(items.add)
    - 现有物品是否被用完/损坏?需要时准备 items.remove;部分消耗用 items.update 改数量。
@@ -1130,7 +1243,7 @@ export const THINKING_CHECKLIST = `【输出前思考】
  * 照搬 Horae 的 prefill 技巧,内容适配 JSON 输出约定。
  */
 export const THINKING_PREFILL = `<thinking>
-收到,我先按检查点逐条梳理,然后只输出一个 JSON 对象(字段 summary/time/location/protagonist/items/scenes/npcs/plans),
+收到,我先按检查点逐条梳理,然后只输出一个 JSON 对象(字段 summary/time/location/sceneFocus/protagonist/items/scenes/npcs/plans),
 不输出 markdown 围栏、不在思考与 JSON 之间插入解释。
 
 1. 本楼核心事件:`;

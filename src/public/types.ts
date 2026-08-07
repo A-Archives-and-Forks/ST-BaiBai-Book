@@ -2,6 +2,7 @@ import type {
   ItemLogEntry,
   JsonValue,
   MemItem,
+  MemLifeDetail,
   MemNpc,
   MemPlan,
   MemProtagonist,
@@ -64,6 +65,8 @@ export interface PublicSnapshot {
   scenes: MemScene[];
   npcs: MemNpc[];
   itemLog: ItemLogEntry[];
+  /** 主角生活小档案(三投放层:pinned 常驻 / active 时效 / archive 触发) */
+  lifeDetails: MemLifeDetail[];
 }
 
 export interface PublicHistoryNode {

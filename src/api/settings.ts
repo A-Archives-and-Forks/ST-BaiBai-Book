@@ -169,6 +169,8 @@ export interface ApiSettings {
    * 也不再把物品/变量变动旁注写回正文。已有正文旁注不主动清理。
    */
   summaryOnlyMode: boolean;
+  /** 生活小档案开关。关闭后:不再提示副 API 记录、已记录的不再注入主模型(数据保留,可随时重开)。 */
+  lifeDetailsEnabled: boolean;
   /** 保留最近 N 条 AI 消息发全文(滑动窗口);更早的自动摘要并隐藏 */
   keepRecent: number;
   /** 排除的角色名:这些名字(含重名卡)的聊天里,记忆系统所有功能都不生效 */
@@ -294,6 +296,7 @@ function defaults(): ApiSettings {
     assignments: { summary: '', resummary: '' },
     autoSummaryEnabled: true,
     summaryOnlyMode: false,
+    lifeDetailsEnabled: true,
     keepRecent: 3,
     excludedChars: [],
     excludedWorldNames: [],

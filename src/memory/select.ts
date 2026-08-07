@@ -106,3 +106,40 @@ export function selectViewNodes(
   };
   return chosen.sort((a, b) => sortKey(a) - sortKey(b));
 }
+
+/* ============ 生活小档案:三投放层选择(纯函数,注入与测试共用) ============ */
+
+/**
+ * 选出本回合要注入的生活细节 —— 「记住 ≠ 每回合必提」的核心闸门:
+ *  - pinned:手动置顶,常驻(≤5 条);
+ *  - active:时效层,未过期且与近期上下文相关才注入;无关键词的长期 active 兜底注入;
+ *  - archive:沉降层,仅 anchors/topics 命中近期上下文才浮出。
+ * 总量封顶(置顶 5 + 触发补齐到 6),防一次性堆太多导致主模型逐条提及。
+ * 只在注入选择层做裁剪,绝不删改真源叶子。
+ */
+export function selectLifeDetailsForInjection(
+  details: import('./types').MemLifeDetail[],
+  contextText: string,
+  nowTime: string,
+  compareDays?: (fromDate: string, toDate: string) => number | null,
+): import('./types').MemLifeDetail[] {
+  const PIN_CAP = 5;
+  const TOTAL_CAP = 6;
+  const pinned = details.filter(d => d.tier === 'pinned').slice(0, PIN_CAP);
+  const picked: MemLifeDetailImport[] = [];
+  for (const d of details) {
+    if (d.tier === 'pinned') continue;
+    if (pinned.length + picked.length >= TOTAL_CAP) break;
+    // 时效过期(两端日期都可解析且 now 已超过 until)→ 不注入;数据保留,可手动沉降/删除
+    if (d.tier === 'active' && d.until && nowTime && compareDays) {
+      const gap = compareDays(d.until, nowTime);
+      if (gap !== null && gap > 0) continue;
+    }
+    const keys = [...d.anchors, ...d.topics].map(s => s.trim()).filter(Boolean);
+    const hit = keys.length ? keys.some(k => contextText.includes(k)) : d.tier === 'active';
+    if (hit) picked.push(d);
+  }
+  return [...pinned, ...picked];
+}
+
+type MemLifeDetailImport = import('./types').MemLifeDetail;

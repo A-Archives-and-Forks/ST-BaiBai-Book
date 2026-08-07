@@ -65,6 +65,11 @@ function deltaHasData(delta: StoredDelta): boolean {
     delta.time ||
     delta.location ||
     delta.locationPath?.length ||
+    delta.sceneFocus ||
+    delta.lifeDetails?.add?.length ||
+    delta.lifeDetails?.update?.length ||
+    delta.lifeDetails?.archive?.length ||
+    delta.lifeDetails?.remove?.length ||
     (delta.protagonist && Object.keys(delta.protagonist).length) ||
     delta.items?.add?.length ||
     delta.items?.update?.length ||
@@ -85,8 +90,9 @@ function deltaHasData(delta: StoredDelta): boolean {
   );
 }
 
-/** 把「截止窗口起点的派生状态」编码成全量 add 的 StoredDelta(种子叶子的 delta)。 */
-function encodeStateAsDelta(state: ReturnType<typeof deriveMemory>): StoredDelta {
+/** 把「截止窗口起点的派生状态」编码成全量 add 的 StoredDelta(种子叶子的 delta)。
+ *  leafId:种子叶子的 id(生活细节的稳定 id 由它派生,需先生成)。 */
+function encodeStateAsDelta(state: ReturnType<typeof deriveMemory>, leafId: string): StoredDelta {
   const delta: StoredDelta = {};
   if (state.state.time) delta.time = state.state.time;
   if (state.state.location) {
@@ -95,6 +101,25 @@ function encodeStateAsDelta(state: ReturnType<typeof deriveMemory>): StoredDelta
   }
   if (Object.values(state.protagonist).some(Boolean)) {
     delta.protagonist = { ...state.protagonist };
+  }
+  // 局势卡:当前场面快照一并带走(新对话从同一局面接着演)
+  if (state.state.sceneFocus) {
+    delta.sceneFocus = { ...state.state.sceneFocus, participants: [...state.state.sceneFocus.participants] };
+  }
+  // 生活小档案:全量带走(含沉降层——带走的是档案本身,投放层继续按 tier 工作)
+  if (state.lifeDetails.length) {
+    delta.lifeDetails = {
+      add: state.lifeDetails.map(d => ({
+        text: d.text,
+        topics: [...d.topics],
+        anchors: [...d.anchors],
+        until: d.until,
+      })),
+      // 非 active 的层级用 update 恢复(pinned/archive 在种子里先以 active 落地,再逐条拨回)
+      update: state.lifeDetails
+        .map((d, i) => ({ id: `detail:${leafId}#${i}`, tier: d.tier }))
+        .filter(u => u.tier !== 'active'),
+    };
   }
 
   if (state.items.length) {
@@ -186,7 +211,7 @@ export function computeCarryoverPlan(): CarryoverPlan {
   }
 
   const recap = renderHistoryNodes(selectHistoryNodesBefore(memory.summaries, chat, carryStart));
-  const seedDelta = encodeStateAsDelta(deriveMemory(chat, carryStart));
+  const seedDelta = encodeStateAsDelta(deriveMemory(chat, carryStart), 'preview');
   return {
     carryStart,
     carryCount,
@@ -229,7 +254,9 @@ export async function createNewChatWithCarryover(): Promise<boolean> {
 
   // 截止窗口起点的派生状态 → 种子叶子 delta(窗口楼层自己的叶子会继续累加,故截到窗口前避免重复)
   const stateBefore = deriveMemory(sourceChat, carryStart);
-  const seedDelta = encodeStateAsDelta(stateBefore);
+  // 种子叶 id 先生成:生活细节的稳定 id 由「叶子id#序号」派生,编码 delta 时就要用
+  const seedLeafId = makeLeafId();
+  const seedDelta = encodeStateAsDelta(stateBefore, seedLeafId);
 
   // 合并历史摘要(窗口之前的剧情) = 种子叶子 text
   const mergedSummary = renderHistoryNodes(selectHistoryNodesBefore(memory.summaries, sourceChat, carryStart));
@@ -307,7 +334,7 @@ export async function createNewChatWithCarryover(): Promise<boolean> {
     setMessageText(anchor, '');
     // 种子叶子挂 #0.extra
     const seedLeaf: LeafExtra = {
-      id: makeLeafId(),
+      id: seedLeafId,
       text: mergedSummary,
       delta: seedDelta,
       timeEnd: seedTime || undefined,
