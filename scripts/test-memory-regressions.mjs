@@ -49,6 +49,7 @@ function occurrence(text, needle, expected, message) {
 }
 
 const { mergeProtagonistDelta } = await importStandalone('../src/memory/protagonist.ts');
+const { mergeLifeDetailsOp } = await importStandalone('../src/memory/lifeDetails.ts');
 
 // 年龄没有参与补丁时，绝不能误删已有锚点。
 deepEqual(
@@ -92,6 +93,122 @@ deepEqual(secondEdit, { age: '25', outfit: '校服' }, '同叶子反复编辑年
 const original = { age: '18', ageTime: '2020/1/1' };
 mergeProtagonistDelta(original, { age: '25' });
 deepEqual(original, { age: '18', ageTime: '2020/1/1' }, '合并不应修改原对象');
+
+// 生活小档案手动操作必须真正合并进叶子 delta；同一叶子连续新增不能覆盖。
+const lifeTarget = {};
+equal(
+  mergeLifeDetailsOp(lifeTarget, { add: [{ text: '不吃香菜' }] }),
+  true,
+  '生活小档案新增应报告已写入',
+);
+mergeLifeDetailsOp(lifeTarget, { add: [{ text: '习惯早睡' }] });
+deepEqual(
+  lifeTarget.lifeDetails.add.map(d => d.text),
+  ['不吃香菜', '习惯早睡'],
+  '同一叶子连续新增应保留全部条目及其 add 序号',
+);
+
+// 同一条反复编辑按字段 last-write-wins，并保留空数组/空字符串这些显式清除值。
+mergeLifeDetailsOp(lifeTarget, {
+  update: [{ id: 'detail:leaf#0', text: '不吃葱', topics: ['饮食'], until: '明天' }],
+});
+mergeLifeDetailsOp(lifeTarget, {
+  update: [{ id: 'detail:leaf#0', anchors: [], until: '', tier: 'pinned' }],
+});
+deepEqual(
+  lifeTarget.lifeDetails.update,
+  [{
+    id: 'detail:leaf#0',
+    text: '不吃葱',
+    topics: ['饮食'],
+    anchors: [],
+    until: '',
+    tier: 'pinned',
+  }],
+  '连续编辑应合并为最终补丁且允许清除标签/时效',
+);
+
+// 手动恢复/置顶必须取消同叶里 AI 较早写入的 archive，否则固定重放顺序会再次把它沉降。
+const archivedLifeTarget = {
+  lifeDetails: { archive: ['detail:old#0', 'detail:other#0'] },
+};
+mergeLifeDetailsOp(archivedLifeTarget, {
+  update: [{ id: 'detail:old#0', tier: 'active' }],
+});
+deepEqual(
+  archivedLifeTarget.lifeDetails.archive,
+  ['detail:other#0'],
+  '手动层级切换应覆盖同叶较早的 archive 指令',
+);
+
+// 删除只登记稳定 id，不能裁剪 add 数组导致后续条目的序号和 id 漂移；重复删除需去重。
+mergeLifeDetailsOp(lifeTarget, { remove: ['detail:leaf#0'] });
+mergeLifeDetailsOp(lifeTarget, { remove: ['detail:leaf#0'] });
+equal(lifeTarget.lifeDetails.add.length, 2, '删除不得裁剪依赖序号生成稳定 id 的 add 数组');
+deepEqual(lifeTarget.lifeDetails.remove, ['detail:leaf#0'], '重复删除应去重');
+equal(mergeLifeDetailsOp({}, {}), false, '空生活小档案操作不应伪报成功');
+
+// 同叶新增→删除→同文案重加：必须原位复活，不能追加后被去重再由旧墓碑删除。
+const sameLeafReaddTarget = {
+  lifeDetails: {
+    add: [{ text: '不吃香菜' }, { text: '习惯早睡' }],
+    remove: ['detail:leaf#0'],
+  },
+};
+mergeLifeDetailsOp(sameLeafReaddTarget, {
+  add: [{ text: '不吃香菜', topics: ['饮食'] }],
+}, {
+  leafId: 'leaf',
+});
+equal(sameLeafReaddTarget.lifeDetails.add.length, 2, '同叶重加不应产生第三个 add 序号');
+deepEqual(
+  sameLeafReaddTarget.lifeDetails.add[0],
+  { text: '不吃香菜', topics: ['饮食'] },
+  '同叶重加应以新输入原位恢复原条目',
+);
+equal(sameLeafReaddTarget.lifeDetails.remove, undefined, '同叶重加应撤销对应删除标记');
+equal(
+  sameLeafReaddTarget.lifeDetails.update?.some(update => update.id === 'detail:leaf#0') ?? false,
+  false,
+  '同叶重加应清除旧编辑与层级补丁，恢复为 active 新记录',
+);
+
+// 更早叶子的条目在当前叶删除后重加：撤销删除，并用完整 update 覆盖旧元数据和层级。
+const crossLeafTarget = {
+  lifeDetails: {
+    remove: ['detail:old#0'],
+    archive: ['detail:old#0'],
+  },
+};
+mergeLifeDetailsOp(crossLeafTarget, {
+  add: [{ text: '不吃香菜' }],
+}, {
+  leafId: 'latest',
+  existingDetails: [{
+    id: 'detail:old#0',
+    text: '不吃香菜',
+    topics: ['旧标签'],
+    anchors: ['旧关键词'],
+    tier: 'pinned',
+    until: '昨天',
+    createdAt: 1,
+  }],
+});
+equal(crossLeafTarget.lifeDetails.add, undefined, '跨叶重加应复活旧稳定 id，而不是追加重复 add');
+equal(crossLeafTarget.lifeDetails.remove, undefined, '跨叶重加应撤销旧删除标记');
+equal(crossLeafTarget.lifeDetails.archive, undefined, '跨叶重加应撤销旧沉降标记');
+deepEqual(
+  crossLeafTarget.lifeDetails.update,
+  [{
+    id: 'detail:old#0',
+    text: '不吃香菜',
+    topics: [],
+    anchors: [],
+    until: '',
+    tier: 'active',
+  }],
+  '跨叶重加应按本次输入清空旧元数据并恢复 active',
+);
 
 // 直观复现用户看到的故障：新年龄若误套旧锚点会再次增长；锚到当前时间才显示用户输入值。
 const { ageDisplay } = await importStandalone('../src/memory/timeRel.ts');
@@ -163,5 +280,11 @@ includes(protagonistCopy[1], "'ageTime'", '主角拷贝循环必须包含 ageTim
 const injectSource = await readFile(new URL('../src/memory/inject.ts', import.meta.url), 'utf8');
 includes(injectSource, "['年龄', ageDisplay(protagonist.age, protagonist.ageTime, now)]", '主角注入块必须包含年龄推算');
 includes(injectSource, 'fmtProtagonistContext(memory.protagonist', '主角注入必须读响应式镜像');
+
+// 手动入口必须接入生活小档案和局势卡，并在没有识别到任何操作时返回失败，防止 UI 静默关闭。
+const applySource = await readFile(new URL('../src/memory/apply.ts', import.meta.url), 'utf8');
+includes(applySource, 'mergeLifeDetailsOp(d, op.lifeDetails,', '手动叶子写入必须合并生活小档案操作');
+includes(applySource, 'if (op.sceneFocus !== undefined)', '手动叶子写入必须处理局势卡覆盖/清空');
+includes(applySource, 'if (!changed) return false;', '未写入任何操作时不得返回成功');
 
 console.log(`memory regression tests passed: ${assertions} assertions`);

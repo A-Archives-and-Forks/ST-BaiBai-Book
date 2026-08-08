@@ -1,6 +1,7 @@
 import { apiSettings } from '@/api/settings';
 import { getContext, setMessageText, type STMessage } from '@/st/context';
 import { fmtItemLogInline } from './prompts';
+import { mergeLifeDetailsOp, normalizeLifeDetailText } from './lifeDetails';
 import { mergeProtagonistDelta } from './protagonist';
 import { memory, recomputeDerived, saveMemory, scheduleLeafFlush } from './store';
 import { readItemsTagText, writeItemLogTag, writeVarLogTag } from './timeTag';
@@ -1358,13 +1359,11 @@ function applyStoredDeltaTo(mem: BaibaiMemory, d: StoredDelta, leaf: { id: strin
 
   // 生活小档案:add(去重)→ update → archive → remove。id 确定性:detail:${leafId}#序号,重放幂等
   if (d.lifeDetails) {
-    /** 去重归一化:norm 基础上再忽略结尾标点(「不吃香菜」与「不吃香菜!」视为同条,防 AI 换标点重复记)。 */
-    const normDetail = (s: string) => norm(s).replace(/[，。！？!?、；;：:\s]+$/u, '');
     (d.lifeDetails.add ?? []).forEach((add, i) => {
       const text = add.text?.trim();
       if (!text) return;
       // 同规范化文本已存在 → 不产生重复行;但把新带的 topics/anchors/until 合并进既有条(补充信息不丢)
-      const dup = mem.lifeDetails.find(x => normDetail(x.text) === normDetail(text));
+      const dup = mem.lifeDetails.find(x => normalizeLifeDetailText(x.text) === normalizeLifeDetailText(text));
       if (dup) {
         if (add.topics?.length) dup.topics = add.topics.slice(0, 3);
         if (add.anchors?.length) dup.anchors = add.anchors.slice(0, 5);
@@ -1718,12 +1717,22 @@ export function appendOpToLatestLeaf(op: StoredDelta): boolean {
   const found = latestLeaf();
   if (!found) return false;
   const { index, leaf } = found;
+  const chat = getContext()!.chat;
   const d: StoredDelta = (leaf.delta ??= {});
+  let changed = false;
 
   if (op.protagonist) {
     d.protagonist = mergeProtagonistDelta(d.protagonist, op.protagonist);
+    changed = true;
+  }
+  if (op.sceneFocus !== undefined) {
+    d.sceneFocus = op.sceneFocus
+      ? { ...op.sceneFocus, participants: [...op.sceneFocus.participants] }
+      : null;
+    changed = true;
   }
   if (op.items) {
+    if (op.items.add?.length || op.items.update?.length || op.items.remove?.length) changed = true;
     // 关键:同名物品在 add/update 与 remove 之间必须互斥(跨桶抵消),否则改名(remove旧+add新)
     // 往返会让 remove 桶残留旧名,而重放固定按 add→update→remove 分组——最后的 remove 会把刚
     // add 回来的同名物品删掉(物品离奇消失)。add 桶内仍保留 push 累加,不动「手动+1」语义。
@@ -1748,6 +1757,7 @@ export function appendOpToLatestLeaf(op: StoredDelta): boolean {
     if (di.remove && !di.remove.length) delete di.remove;
   }
   if (op.npcs) {
+    if (op.npcs.add?.length || op.npcs.update?.length || op.npcs.remove?.length) changed = true;
     // 与物品同款跨桶互斥:同名 NPC 在 add/update 与 remove 之间不能并存,
     // 否则改名(remove旧+add新)往返会让 remove 桶残留旧名,重放按 add→update→remove 把刚 add 的删掉。
     const dn = (d.npcs ??= {});
@@ -1770,6 +1780,13 @@ export function appendOpToLatestLeaf(op: StoredDelta): boolean {
     if (dn.remove && !dn.remove.length) delete dn.remove;
   }
   if (op.scenes) {
+    if (
+      op.scenes.add?.length
+      || op.scenes.update?.length
+      || op.scenes.reparent?.length
+      || op.scenes.remove?.length
+      || op.scenes.ops?.length
+    ) changed = true;
     const ds = (d.scenes ??= {});
     if (op.scenes.add?.length) (ds.add ??= []).push(...op.scenes.add);
     if (op.scenes.update?.length) (ds.update ??= []).push(...op.scenes.update);
@@ -1778,6 +1795,7 @@ export function appendOpToLatestLeaf(op: StoredDelta): boolean {
     if (op.scenes.ops?.length) (ds.ops ??= []).push(...op.scenes.ops);
   }
   if (op.plans) {
+    if (op.plans.add?.length || op.plans.resolve?.length || op.plans.remove?.length || op.plans.reopen?.length) changed = true;
     const dp = (d.plans ??= {});
     if (op.plans.add?.length) (dp.add ??= []).push(...op.plans.add);
     for (const r of op.plans.resolve ?? []) {
@@ -1793,13 +1811,19 @@ export function appendOpToLatestLeaf(op: StoredDelta): boolean {
       (dp.remove ??= []).push(id);
     }
   }
+  const existingLifeDetails = op.lifeDetails?.add?.length
+    ? deriveMemory(chat, index).lifeDetails
+    : undefined;
+  if (mergeLifeDetailsOp(d, op.lifeDetails, { leafId: leaf.id, existingDetails: existingLifeDetails })) changed = true;
   if (op.varOps?.length) {
     // 追加本次命令到最新叶子(按顺序,后施加者覆盖前者)
     (d.varOps ??= []).push(...op.varOps);
+    changed = true;
   }
 
+  if (!changed) return false;
+
   // 重设 extra 引用以确保持久化带上改动
-  const chat = getContext()!.chat;
   chat[index].extra = { ...(chat[index].extra ?? {}), bbs_leaf: leaf };
 
   recomputeDerived();
