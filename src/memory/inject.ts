@@ -536,6 +536,14 @@ export function buildStateInjectionText(): string {
   // 仅摘要模式保留内部状态供副 API、页面和公开查询使用,主模型只接收剧情摘要。
   if (apiSettings.summaryOnlyMode) return '';
 
+  // 注入设置(设置页「注入设置」区):只影响这里发给主模型的内容;
+  // 副 API 摘要走 prompts.ts 自己的状态渲染,始终见全量、照常记录,不受这些开关影响。
+  // 依赖:NPC 在场分档 / 物品可达判定都走场景树 → 场景不注入时 NPC/物品随之不注入。
+  const inj = apiSettings.injection;
+  const scenesOn = inj.scenes;
+  const npcsOn = inj.npcs && scenesOn;
+  const itemsOn = inj.items && scenesOn;
+
   const st: string[] = [];
   if (memory.state.time) {
     // 周几只在标准公历带年份时有(weekdayLabel 自带门槛),古风/架空时间不标
@@ -546,7 +554,7 @@ export function buildStateInjectionText(): string {
 
   // 互动局势卡:衔接当下场面。tension/将发生仅作隐性氛围约束,明确告知勿点破——防过度提及。
   const focus = memory.state.sceneFocus;
-  if (focus) {
+  if (inj.sceneFocus && focus) {
     const bits: string[] = [`局面:${oneLine(focus.situation)}`];
     const who = focus.participants.map(oneLine).filter(Boolean).join('、');
     if (who) bits.push(`在场:${who}`);
@@ -557,7 +565,8 @@ export function buildStateInjectionText(): string {
   }
 
   // 生活小档案:置顶常驻 + 关键词触发的时效/沉降层。「记住 ≠ 每回合必提」——没命中就不出现。
-  if (apiSettings.lifeDetailsEnabled && memory.lifeDetails.length) {
+  // 记录始终开启(无开关);这里 injection.lifeDetails 只管「注入」。
+  if (inj.lifeDetails && memory.lifeDetails.length) {
     const picked = selectLifeDetailsForInjection(memory.lifeDetails, recentContextText(), memory.state.time, calculateRelativeDays);
     if (picked.length) {
       const lines = picked.map(d => `- ${oneLine(d.text)}`);
@@ -565,24 +574,31 @@ export function buildStateInjectionText(): string {
     }
   }
 
-  const protagonistBlock = fmtProtagonistContext(memory.protagonist, getContext()?.name1 ?? '', memory.state.time);
-  if (protagonistBlock) st.push(`[主角当前状态]\n${protagonistBlock}`);
+  // 主角状态自包含,不依赖场景树,独立开关。
+  if (inj.protagonist) {
+    const protagonistBlock = fmtProtagonistContext(memory.protagonist, getContext()?.name1 ?? '', memory.state.time);
+    if (protagonistBlock) st.push(`[主角当前状态]\n${protagonistBlock}`);
+  }
 
   const here = memory.state.location || '';
   const locPath = memory.state.locationPath;
   // 场景树:当前地点 + 祖先链(详细) + 其他地点(仅名称)。祖先链同时用于物品/NPC 可达判定。
-  const sceneBlock = fmtSceneContext(memory.scenes, here, locPath);
-  if (sceneBlock) st.push(`地点记忆:\n${sceneBlock}`);
+  if (scenesOn) {
+    const sceneBlock = fmtSceneContext(memory.scenes, here, locPath);
+    if (sceneBlock) st.push(`地点记忆:\n${sceneBlock}`);
+  }
 
   // 物品分两组省 token:可达(随身 / 存放地落在当前地点或其祖先链)发全量(名+量+描述);
   // 他处寄存的只发名+数量(砍掉描述这个大头),既省 token 又不至于让主模型以为东西没了。
-  st.push(...fmtItemContext(memory.items, memory.scenes, here, locPath));
+  if (itemsOn) st.push(...fmtItemContext(memory.items, memory.scenes, here, locPath));
   // 注:近期物品变动不在此注入。改为摘要后写进对应楼层正文 </bbs_end> 之后(见 engine.ts),
   // 窗口内全文楼层天然可见、滚出窗口自然消失 —— 符合「物品变动只在那段时间有用」的取舍。
 
   // NPC 名册四档:在场发全量;同区域发名+身份+性格+所在地;不在场只发名+身份。NPC 越多省得越多。
-  const npcBlock = fmtNpcContext(memory.npcs, memory.scenes, here, locPath, memory.state.time);
-  if (npcBlock) st.push(`NPC名册:\n${npcBlock}`);
+  if (npcsOn) {
+    const npcBlock = fmtNpcContext(memory.npcs, memory.scenes, here, locPath, memory.state.time);
+    if (npcBlock) st.push(`NPC名册:\n${npcBlock}`);
+  }
 
   const openPlans = memory.plans
     .filter(p => p.status === 'open')
@@ -610,8 +626,8 @@ export function buildStateInjectionText(): string {
 
   // 状态块在有任何有意义内容时才注入(物品/计划即使空也会有「(无)」占位,
   // 但只要存在摘要或时间/地点就值得带上整块)
-  const hasProtagonist = Object.values(memory.protagonist).some(value => !!oneLine(value));
-  const hasState = memory.state.time || memory.state.location || memory.state.sceneFocus || hasProtagonist || memory.items.length || memory.scenes.length || memory.npcs.length || openPlans.length || hasVarState || (apiSettings.lifeDetailsEnabled && memory.lifeDetails.length);
+  const hasProtagonist = inj.protagonist && Object.values(memory.protagonist).some(value => !!oneLine(value));
+  const hasState = memory.state.time || memory.state.location || (inj.sceneFocus && memory.state.sceneFocus) || hasProtagonist || (itemsOn && memory.items.length) || (scenesOn && memory.scenes.length) || (npcsOn && memory.npcs.length) || openPlans.length || hasVarState || (inj.lifeDetails && memory.lifeDetails.length);
   if (!hasState) return '';
   // 首尾私密简报框定,避免主模型把状态快照当成要复述/输出的模板(正文后跟吐一份状态)
   return `${MEMORY_BRIEFING_NOTE}\n[当前状态]\n${st.join('\n')}\n${MEMORY_BRIEFING_END}`;

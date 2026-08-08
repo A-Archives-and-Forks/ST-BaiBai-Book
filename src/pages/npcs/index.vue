@@ -328,7 +328,7 @@ function confirmRemove() {
     <hr class="bbs-rule" />
 
     <!-- ===== 生活小档案:主角的偏好/习惯/近期状态(三投放层)。置于主角卡之上且可折叠,不打断下方角色卡流 ===== -->
-    <div v-if="apiSettings.lifeDetailsEnabled" class="bbs-protagonist-section">
+    <div class="bbs-protagonist-section">
       <div class="bbs-npc-grouphead">
         <button
           class="bbs-fold-head"

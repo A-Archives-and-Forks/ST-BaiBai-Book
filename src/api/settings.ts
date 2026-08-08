@@ -148,6 +148,27 @@ export interface UiPrefs {
 /** 字数详尽档位:detailed=详细(默认),concise=精简(摘要/总结/二次总结字数一并降低)。仅影响内置模板。 */
 export type Verbosity = 'detailed' | 'concise';
 
+/**
+ * 注入设置:各状态块是否注入**主模型**(生成正文的请求)。
+ * 只影响 buildStateInjectionText;副 API 摘要始终看到全量状态、照常记录(防重复记录),不受此影响。
+ * 依赖关系:NPC 名册的在场分档与物品清单的可达判定都走场景树,
+ * 故 scenes 关闭时 npcs/items 实际不注入(界面同步置灰);主角状态自包含,不依赖场景。
+ */
+export interface InjectionSections {
+  /** 眼下局势(sceneFocus 互动局势卡) */
+  sceneFocus: boolean;
+  /** 主角生活细节(仅控制注入;记录始终开启,无开关——不注入时记多少都不影响正文) */
+  lifeDetails: boolean;
+  /** 主角当前状态(性别/年龄/外貌/着装/状态) */
+  protagonist: boolean;
+  /** NPC 名册(依赖场景信息) */
+  npcs: boolean;
+  /** 物品清单(依赖场景信息) */
+  items: boolean;
+  /** 场景信息(当前地点+祖先链+其他已知地点);关闭后 NPC/物品随之不注入 */
+  scenes: boolean;
+}
+
 export interface ApiSettings {
   /** 插件总开关。关闭后停止一切自动注入/摘要/总结/隐藏;ST 菜单入口仍在,可重新打开界面再开启。 */
   enabled: boolean;
@@ -169,8 +190,8 @@ export interface ApiSettings {
    * 也不再把物品/变量变动旁注写回正文。已有正文旁注不主动清理。
    */
   summaryOnlyMode: boolean;
-  /** 生活小档案开关。关闭后:不再提示副 API 记录、已记录的不再注入主模型(数据保留,可随时重开)。 */
-  lifeDetailsEnabled: boolean;
+  /** 注入设置:各状态块是否注入主模型(仅摘要模式开启时整组不生效) */
+  injection: InjectionSections;
   /** 保留最近 N 条 AI 消息发全文(滑动窗口);更早的自动摘要并隐藏 */
   keepRecent: number;
   /** 排除的角色名:这些名字(含重名卡)的聊天里,记忆系统所有功能都不生效 */
@@ -296,7 +317,7 @@ function defaults(): ApiSettings {
     assignments: { summary: '', resummary: '' },
     autoSummaryEnabled: true,
     summaryOnlyMode: false,
-    lifeDetailsEnabled: true,
+    injection: { sceneFocus: true, lifeDetails: true, protagonist: true, npcs: true, items: true, scenes: true },
     keepRecent: 3,
     excludedChars: [],
     excludedWorldNames: [],
@@ -365,6 +386,16 @@ function normalize(raw: unknown): ApiSettings {
   // 渲染世界书模板:布尔,缺失(老数据无此键)回退 true(默认开,让动态世界书条目拿到成品)
   merged.renderWorldInfoTemplates =
     typeof merged.renderWorldInfoTemplates === 'boolean' ? merged.renderWorldInfoTemplates : true;
+  // 注入设置:嵌套对象,逐字段兜底(老数据没有 injection 键时全回退 true = 老行为不变)
+  const ri = ((raw as Partial<ApiSettings>).injection ?? {}) as Partial<InjectionSections>;
+  merged.injection = {
+    sceneFocus: typeof ri.sceneFocus === 'boolean' ? ri.sceneFocus : true,
+    lifeDetails: typeof ri.lifeDetails === 'boolean' ? ri.lifeDetails : true,
+    protagonist: typeof ri.protagonist === 'boolean' ? ri.protagonist : true,
+    npcs: typeof ri.npcs === 'boolean' ? ri.npcs : true,
+    items: typeof ri.items === 'boolean' ? ri.items : true,
+    scenes: typeof ri.scenes === 'boolean' ? ri.scenes : true,
+  };
   // vector 同为嵌套对象(且内含子对象),逐层兜底,老数据缺字段时回退默认。
   // 注:旧结构曾有 vector.channels + {channel,model};扁平化后弃用,逐角色按 url/key/model 兜底,
   // 老数据缺这些字段会回退空串(等于「未配置」,用户重填一次即可)。
@@ -537,6 +568,7 @@ function applyInto(target: ApiSettings, src: ApiSettings): void {
   target.assignments = src.assignments;
   target.autoSummaryEnabled = src.autoSummaryEnabled;
   target.summaryOnlyMode = src.summaryOnlyMode;
+  target.injection = src.injection;
   target.keepRecent = src.keepRecent;
   target.excludedChars = src.excludedChars;
   target.excludedWorldNames = src.excludedWorldNames;

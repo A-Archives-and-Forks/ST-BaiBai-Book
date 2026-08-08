@@ -1095,7 +1095,7 @@ async function summarizeFloorWork(
     time: stateBefore.state.time,
     location: stateBefore.state.location,
     sceneFocus: stateBefore.state.sceneFocus,
-    lifeDetails: apiSettings.lifeDetailsEnabled ? stateBefore.lifeDetails : [],
+    lifeDetails: stateBefore.lifeDetails,
     protagonist: stateBefore.protagonist,
     items: stateBefore.items.map(i => ({ name: i.name, qty: i.qty, desc: i.desc, carried: i.carried, location: i.location })),
     itemLog: stateBefore.itemLog,

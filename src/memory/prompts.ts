@@ -992,11 +992,9 @@ export function buildSummaryPrompt(a: BuildArgs): string {
     plans_block: fmtPlans(a.openPlans),
     resolved_plans_block: fmtResolvedPlans(a.resolvedPlans),
     scenefocus_block: fmtSceneFocus(a.sceneFocus),
-    lifedetails_block: apiSettings.lifeDetailsEnabled
-      ? `- 主角生活小档案(已记录,用编号 d1/d2… 指代;只读参考,勿重复记录 —— 见下方【生活小档案规则】):\n${fmtLifeDetails(a.lifeDetails)}\n`
-      : '',
-    lifedetails_field: apiSettings.lifeDetailsEnabled ? LIFE_DETAILS_FIELD_TMPL : '',
-    lifedetails_rule: apiSettings.lifeDetailsEnabled ? `\n${RULE_LIFE_DETAILS}\n` : '',
+    lifedetails_block: `- 主角生活小档案(已记录,用编号 d1/d2… 指代;只读参考,勿重复记录 —— 见下方【生活小档案规则】):\n${fmtLifeDetails(a.lifeDetails)}\n`,
+    lifedetails_field: LIFE_DETAILS_FIELD_TMPL,
+    lifedetails_rule: `\n${RULE_LIFE_DETAILS}\n`,
     content: a.content,
     time_field: a.hasTimeTags ? TIME_FIELD_WITH_TAGS : TIME_FIELD_NO_TAGS,
     time_rule: a.hasTimeTags ? TIME_RULE_WITH_TAGS : TIME_RULE_NO_TAGS,
@@ -1016,7 +1014,7 @@ export function buildSummaryPrompt(a: BuildArgs): string {
   const prompt = fill(tpl, macros);
   if (!custom) return prompt;
   const supplements = [fill(PROTAGONIST_PROTOCOL_SUPPLEMENT, macros), RULE_ABSOLUTE_TIME_LANGUAGE, SCENE_FOCUS_PROTOCOL_SUPPLEMENT];
-  if (apiSettings.lifeDetailsEnabled) supplements.push(LIFE_DETAILS_PROTOCOL_SUPPLEMENT);
+  supplements.push(LIFE_DETAILS_PROTOCOL_SUPPLEMENT);
   // {{time_rule}} 在无时间标签时本身已经带有完整时间协议;
   // 只有自定义模板没有带入它时,才追加兼容协议,避免完整时间要求重复注入。
   if (!a.hasTimeTags && !prompt.includes('【完整时间锚点格式(系统强制)】')) {
@@ -1034,7 +1032,7 @@ function hasVars(a: BuildArgs): boolean {
 const VARS_FIELD_TMPL = `,
   "vars": [ { "op": "set|add|assign|remove", "path": "点/括号路径", "key": "assign/remove 用(可选)", "value": "set/assign 用(可选)", "delta": "add 用的数字(可选)" } ]`;
 
-/** 生活小档案字段的 JSON 模板片段(接在 plans 之后,故带前导逗号)。仅 lifeDetailsEnabled 时注入。 */
+/** 生活小档案字段的 JSON 模板片段(接在 plans 之后,故带前导逗号)。 */
 const LIFE_DETAILS_FIELD_TMPL = `,
   "lifeDetails": {
     "add": [{ "text": "主角明说过的偏好/习惯/近期状态一句话", "topics": ["主题标签,1-3个"], "anchors": ["原文关键词"], "until": "故事内到期时间(长期偏好留空,可选)" }],

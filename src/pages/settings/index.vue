@@ -919,16 +919,6 @@ function exportPublicApiDocument() {
           <input v-model="apiSettings.autoSummaryEnabled" type="checkbox" class="bbs-checkbox" />
         </label>
         <p class="bbs-field-hint">开启后自动摘要并隐藏旧楼,同时启用正文时间标签(剧情时间锚点)与积压拦截(漏摘时拦截发送、提示补摘)。</p>
-        <label class="bbs-switch-row">
-          <span class="bbs-field-label">仅注入剧情摘要</span>
-          <input v-model="apiSettings.summaryOnlyMode" type="checkbox" class="bbs-checkbox" />
-        </label>
-        <p class="bbs-field-hint">兼容角色卡自带的变量系统。开启后仍会分析、保存并在柏宝书内展示物品、角色、场景、计划和变量,但不再把当前状态注入主模型,也不再向后续楼层正文写入物品/变量变动旁注。已有楼层中的旁注不会主动清理;场景页的「前往」功能不受影响。</p>
-        <label class="bbs-switch-row">
-          <span class="bbs-field-label">记录主角生活细节</span>
-          <input v-model="apiSettings.lifeDetailsEnabled" type="checkbox" class="bbs-checkbox" />
-        </label>
-        <p class="bbs-field-hint">生活小档案:摘要时记下主角明说过的偏好/习惯/近期状态(如「不吃香菜」「在赶项目」)。置顶条常驻发送,其余仅在与当前对话相关时才浮现,避免逢回必提。关闭后不再记录、不再注入,已记录的数据保留并可在角色页管理。</p>
         <label class="bbs-num-row">
           <span class="bbs-field-label">字数档位</span>
           <select v-model="apiSettings.verbosity" class="bbs-input bbs-select bbs-select-narrow">
@@ -982,6 +972,55 @@ function exportPublicApiDocument() {
           <input v-model.number="apiSettings.batchMaxFloors" class="bbs-input bbs-num" type="number" min="1" />
         </label>
         <p class="bbs-field-hint">字数没到上限时,楼数到此也切批,作为兜底。默认 10。</p>
+      </Collapsible>
+
+      <!-- 注入设置 -->
+      <Collapsible title="注入设置" :open="false">
+        <p class="bbs-field-hint">选择哪些状态块注入主对话(生成正文的请求)。这些开关<strong>只影响主模型看到的内容</strong>:副 API 摘要始终能看到全量状态、照常记录,关闭某项不会导致重复记录。时间/地点、计划/悬念与自定义变量保持常驻,不在此处开关。</p>
+
+        <label class="bbs-switch-row">
+          <span class="bbs-field-label">仅注入剧情摘要</span>
+          <input v-model="apiSettings.summaryOnlyMode" type="checkbox" class="bbs-checkbox" />
+        </label>
+        <p class="bbs-field-hint">兼容角色卡自带的变量系统。开启后仍会分析、保存并在柏宝书内展示物品、角色、场景、计划和变量,但不再把当前状态注入主模型(下方各块开关也随之不生效),也不再向后续楼层正文写入物品/变量变动旁注。已有楼层中的旁注不会主动清理;场景页的「前往」功能不受影响。</p>
+
+        <hr class="bbs-rule" />
+
+        <label class="bbs-switch-row">
+          <span class="bbs-field-label">眼下局势</span>
+          <input v-model="apiSettings.injection.sceneFocus" type="checkbox" class="bbs-checkbox" :disabled="apiSettings.summaryOnlyMode" />
+        </label>
+        <p class="bbs-field-hint">当前互动局势卡:局面、在场人、当前焦点、互动张力与即将发生之事,衔接当下场面。</p>
+
+        <label class="bbs-switch-row">
+          <span class="bbs-field-label">生活档案</span>
+          <input v-model="apiSettings.injection.lifeDetails" type="checkbox" class="bbs-checkbox" :disabled="apiSettings.summaryOnlyMode" />
+        </label>
+        <p class="bbs-field-hint">主角生活细节的注入开关。记录始终开启(AI 照常积累档案,可在角色页管理);关闭后只是不再发给主模型,重开即可恢复注入。</p>
+
+        <label class="bbs-switch-row">
+          <span class="bbs-field-label">主角信息</span>
+          <input v-model="apiSettings.injection.protagonist" type="checkbox" class="bbs-checkbox" :disabled="apiSettings.summaryOnlyMode" />
+        </label>
+        <p class="bbs-field-hint">主角当前状态:性别、年龄、身份、外貌、着装、状态。自包含,不依赖场景信息。</p>
+
+        <label class="bbs-switch-row">
+          <span class="bbs-field-label">场景信息</span>
+          <input v-model="apiSettings.injection.scenes" type="checkbox" class="bbs-checkbox" :disabled="apiSettings.summaryOnlyMode" />
+        </label>
+        <p class="bbs-field-hint">当前地点与祖先链(详细)+ 其他已知地点(仅名称)。<strong>NPC 名册与物品信息的在场/可达判定都依赖场景树,关闭此项后这两项也随之不注入。</strong></p>
+
+        <label class="bbs-switch-row">
+          <span class="bbs-field-label">NPC 名册</span>
+          <input v-model="apiSettings.injection.npcs" type="checkbox" class="bbs-checkbox" :disabled="apiSettings.summaryOnlyMode || !apiSettings.injection.scenes" />
+        </label>
+        <p class="bbs-field-hint">在场角色全量、同区域从简、不在场仅名与身份;依赖场景信息。</p>
+
+        <label class="bbs-switch-row">
+          <span class="bbs-field-label">物品信息</span>
+          <input v-model="apiSettings.injection.items" type="checkbox" class="bbs-checkbox" :disabled="apiSettings.summaryOnlyMode || !apiSettings.injection.scenes" />
+        </label>
+        <p class="bbs-field-hint">随身/可达物品发全量,他处寄存仅名与数量;依赖场景信息。</p>
       </Collapsible>
 
       <!-- 排除角色 -->
