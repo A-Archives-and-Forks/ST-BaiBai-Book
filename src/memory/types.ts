@@ -4,7 +4,7 @@
  * 存储位置:
  *  - **叶子摘要**:存在 chat 消息对象的 extra.bbs_leaf 上(LeafExtra)。随消息/swipe
  *    由 ST 自动跟随(per-swipe extra)、随 chat 文件持久化。删消息→叶子随之消失;
- *    翻页→该 swipe 的叶子自动换上;regenerate/编辑→正文变 → srcHash 不匹配 → 叶子「陈旧」失效。
+ *    翻页/regenerate→按 swipe 页码切换有效叶子;普通正文编辑不再自动废除摘要。
  *  - **压缩节点**(L1/L2…):存独立森林 chat_metadata.baibai_book.summaries(MemSummary,
  *    level≥1)。它是跨楼聚合、无单一消息可挂,用 childIds 引用下层(L1→叶子id、L2→L1id)。
  *

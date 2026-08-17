@@ -1711,7 +1711,7 @@ export function latestLeaf(): { index: number; leaf: LeafExtra } | null {
  * 把一段手动 op 合并进「最新有效叶子」的 delta,改内存 extra → 重算 + 落盘(chat 文件)。
  * 无有效叶子时返回 false(页面据此禁用手动添加)。
  * resolve/reopen 互斥去重:对同一 plan,后一次操作覆盖前一次(同叶子内 last-write-wins)。
- * 不改 srcHash(锚定的是正文,不是 delta)→ 不影响 leafValid。
+ * 只改 delta,不改变叶子的结构与 swipe 归属,故不影响 leafValid。
  */
 export function appendOpToLatestLeaf(op: StoredDelta): boolean {
   const found = latestLeaf();
@@ -2098,7 +2098,7 @@ export function deleteLeafAt(index: number): boolean {
 
 /**
  * 手动编辑某条消息上的叶子:摘要正文 + 故事内起止时间。
- * 不改 srcHash(锚定的是正文,不是摘要),故叶子仍有效。
+ * 摘要字段不是 leafValid 的判据,编辑后叶子仍有效。
  * timeEnd 同步写进 delta.time(覆盖型当前状态,重放即生效);编辑后清掉旧的 timeLabel(已被起止取代)。
  */
 export function editLeafAt(index: number, text: string, timeStart: string, timeEnd: string): boolean {
@@ -2178,7 +2178,7 @@ function rewriteFloorTags(chat: STMessage[], index: number, delta: StoredDelta):
 /**
  * 编辑一条计划/悬念:改 content / createdTime / targetTime。
  * 计划 id = `plan:${叶子id}#${在该叶子 add 数组里的序号}`,据此定位到产生它的叶子的 delta.plans.add[idx]。
- * 不改 srcHash(锚定正文,与 delta 无关),叶子仍有效;改完重算派生 + 落盘。
+ * 只改叶子 delta,叶子仍有效;改完重算派生 + 落盘。
  */
 export function editPlan(
   planIdStr: string,

@@ -50,6 +50,28 @@ function occurrence(text, needle, expected, message) {
 
 const { mergeProtagonistDelta } = await importStandalone('../src/memory/protagonist.ts');
 const { mergeLifeDetailsOp } = await importStandalone('../src/memory/lifeDetails.ts');
+const { stripBaiBaiImageTags } = await importStandalone('../src/memory/imageTag.ts');
+
+equal(
+  stripBaiBaiImageTags('第一行\n<bbi_image>tag<size>portrait</size></bbi_image>\n第二行'),
+  '第一行\n第二行',
+  '柏宝绘独占行标签应连同前置 LF 删除',
+);
+equal(
+  stripBaiBaiImageTags('第一行\r\n<bbi_image>tag\r\n<nl>scene</nl></bbi_image>\r\n第二行'),
+  '第一行\r\n第二行',
+  '柏宝绘跨行标签应兼容 CRLF',
+);
+equal(
+  stripBaiBaiImageTags('第一行\n<bbi_image>a</bbi_image>\n<bbi_image>b</bbi_image>\n第二行'),
+  '第一行\n第二行',
+  '同一位置连续多个柏宝绘标签不应留下空行',
+);
+equal(
+  stripBaiBaiImageTags('前文<bbi_image>tag</bbi_image>后文'),
+  '前文后文',
+  '手写行内柏宝绘标签只删除标签本身',
+);
 
 // 年龄没有参与补丁时，绝不能误删已有锚点。
 deepEqual(
@@ -286,5 +308,8 @@ const applySource = await readFile(new URL('../src/memory/apply.ts', import.meta
 includes(applySource, 'mergeLifeDetailsOp(d, op.lifeDetails,', '手动叶子写入必须合并生活小档案操作');
 includes(applySource, 'if (op.sceneFocus !== undefined)', '手动叶子写入必须处理局势卡覆盖/清空');
 includes(applySource, 'if (!changed) return false;', '未写入任何操作时不得返回成功');
+
+const timeTagSource = await readFile(new URL('../src/memory/timeTag.ts', import.meta.url), 'utf8');
+includes(timeTagSource, 's = stripBaiBaiImageTags(s);', '统一正文清洗必须过滤柏宝绘标签');
 
 console.log(`memory regression tests passed: ${assertions} assertions`);

@@ -250,10 +250,27 @@ const SHARED_CHANNELS_KEY = 'baibai_api_channels';
 const SHARED_CHANNELS_EVENT = 'st-baibai-api-channels:changed';
 const SHARED_CHANNELS_SCHEMA_VERSION = 1;
 
+/* —— 排除设置共享存储:与柏宝绘等「柏宝」插件共用同一份排除名单(渠道同款协议) ——
+   真身存在 extensionSettings[SHARED_EXCLUDES_KEY](带 revision),各插件的设置里只留镜像。
+   任一端写入后广播事件,其他端收到后从 extensionSettings 重读并应用,实现跨插件实时同步。
+   双端语义一致:排除角色=功能停用、整本/条目名排除=副API世界书过滤、清洗标签=正文整块删除。 */
+const SHARED_EXCLUDES_KEY = 'baibai_exclude_settings';
+const SHARED_EXCLUDES_EVENT = 'st-baibai-exclude-settings:changed';
+const SHARED_EXCLUDES_SCHEMA_VERSION = 1;
+
 interface SharedChannelsStore {
   schemaVersion: number;
   revision: number;
   channels: ApiChannel[];
+}
+
+interface SharedExcludesStore {
+  schemaVersion: number;
+  revision: number;
+  excludedChars: string[];
+  excludedWorldNames: string[];
+  excludedWorldInfoPatterns: string[];
+  customStripTags: string[];
 }
 
 /** 条目名过滤的内置默认规则:首次载入时「播种」进用户列表(见 hydrateSettings),之后用户可自由增删。
@@ -549,6 +566,9 @@ let ready = false;
 let sharedChannelsFingerprint = '';
 let sharedChannelsRevision = 0;
 let sharedChannelsListenerBound = false;
+let sharedExcludesFingerprint = '';
+let sharedExcludesRevision = 0;
+let sharedExcludesListenerBound = false;
 
 // hydrate 完成后要通知的订阅者(如 ui.ts:settings 就绪后才能拿到同步过来的主题/导航位置)。
 // 若订阅时已就绪则立刻回调,避免错过时序。
@@ -667,6 +687,132 @@ function hydrateSharedChannels(legacyChannels: ApiChannel[]): void {
   bindSharedChannelsListener();
 }
 
+/* ============ 排除设置共享存储(与柏宝绘共用,协议与渠道完全同构) ============ */
+
+function excludesFingerprint(ex: Pick<ApiSettings, 'excludedChars' | 'excludedWorldNames' | 'excludedWorldInfoPatterns' | 'customStripTags'>): string {
+  return JSON.stringify([
+    ex.excludedChars,
+    ex.excludedWorldNames,
+    ex.excludedWorldInfoPatterns,
+    ex.customStripTags,
+  ]);
+}
+
+/** 判断名单里除内置默认条目名规则(mvu)外,是否还有任何用户数据。 */
+function excludesHasUserData(ex: Pick<ApiSettings, 'excludedChars' | 'excludedWorldNames' | 'excludedWorldInfoPatterns' | 'customStripTags'>): boolean {
+  const patterns = ex.excludedWorldInfoPatterns.filter(p => !DEFAULT_WI_PATTERNS.includes(p));
+  return (
+    ex.excludedChars.length > 0 ||
+    ex.excludedWorldNames.length > 0 ||
+    patterns.length > 0 ||
+    ex.customStripTags.length > 0
+  );
+}
+
+/** 从共享存储原样读出四名单,逐名单按本地 normalize 同口径清洗(缺字段/类型不符回退空数组)。 */
+function readSharedExcludes(raw: unknown): SharedExcludesStore | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const store = raw as Partial<SharedExcludesStore>;
+  if (!Array.isArray(store.excludedChars)) return null;
+  return {
+    schemaVersion: SHARED_EXCLUDES_SCHEMA_VERSION,
+    revision:
+      typeof store.revision === 'number' && Number.isFinite(store.revision)
+        ? Math.max(0, Math.floor(store.revision))
+        : 0,
+    excludedChars: store.excludedChars.filter((x): x is string => typeof x === 'string'),
+    excludedWorldNames: Array.isArray(store.excludedWorldNames)
+      ? store.excludedWorldNames.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+      : [],
+    excludedWorldInfoPatterns: Array.isArray(store.excludedWorldInfoPatterns)
+      ? store.excludedWorldInfoPatterns.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+      : [],
+    customStripTags: Array.isArray(store.customStripTags)
+      ? Array.from(
+        new Set(
+          store.customStripTags
+            .filter((x): x is string => typeof x === 'string')
+            .map(sanitizeTagName)
+            .filter(Boolean),
+        ),
+      )
+      : [],
+  };
+}
+
+function writeSharedExcludes(dispatch = true): void {
+  const ctx = getContext();
+  if (!ctx?.extensionSettings) return;
+  sharedExcludesRevision += 1;
+  const store: SharedExcludesStore = {
+    schemaVersion: SHARED_EXCLUDES_SCHEMA_VERSION,
+    revision: sharedExcludesRevision,
+    excludedChars: JSON.parse(JSON.stringify(apiSettings.excludedChars)) as string[],
+    excludedWorldNames: JSON.parse(JSON.stringify(apiSettings.excludedWorldNames)) as string[],
+    excludedWorldInfoPatterns: JSON.parse(JSON.stringify(apiSettings.excludedWorldInfoPatterns)) as string[],
+    customStripTags: JSON.parse(JSON.stringify(apiSettings.customStripTags)) as string[],
+  };
+  ctx.extensionSettings[SHARED_EXCLUDES_KEY] = store;
+  sharedExcludesFingerprint = excludesFingerprint(store);
+  ctx.saveSettingsDebounced?.();
+  if (dispatch) {
+    window.dispatchEvent(
+      new CustomEvent(SHARED_EXCLUDES_EVENT, {
+        detail: { revision: store.revision, source: 'ST-BaiBai-Book' },
+      }),
+    );
+  }
+}
+
+function applySharedExcludes(store: SharedExcludesStore): void {
+  const fingerprint = excludesFingerprint(store);
+  sharedExcludesRevision = Math.max(sharedExcludesRevision, store.revision);
+  if (fingerprint === sharedExcludesFingerprint) return;
+  apiSettings.excludedChars = store.excludedChars;
+  apiSettings.excludedWorldNames = store.excludedWorldNames;
+  apiSettings.excludedWorldInfoPatterns = store.excludedWorldInfoPatterns;
+  apiSettings.customStripTags = store.customStripTags;
+  sharedExcludesFingerprint = fingerprint;
+}
+
+function bindSharedExcludesListener(): void {
+  if (sharedExcludesListenerBound) return;
+  sharedExcludesListenerBound = true;
+  window.addEventListener(SHARED_EXCLUDES_EVENT, () => {
+    const ctx = getContext();
+    const store = readSharedExcludes(ctx?.extensionSettings?.[SHARED_EXCLUDES_KEY]);
+    if (store) applySharedExcludes(store);
+  });
+}
+
+/**
+ * 排除设置共享存储接管:存在则以共享为准覆盖本插件镜像;
+ * 不存在则以本插件当前名单(老用户已配置 + 已播种的默认规则)为种子写入。
+ * 播种只在「无存储」时发生,天然满足「只发一次、删了不补回」,无需额外标记。
+ *
+ * 自愈守卫:共享存储存在但完全没有用户数据(疑似早期版本的「空种子」遗留——
+ * 没有数据的插件曾经也会创建共享存储,导致双方互相同步成空),
+ * 而本插件名单里还有用户数据时 → 不领养空 store,以本插件为准回写共享存储并广播,
+ * 把真实数据修复回去。注意:用户在任一端有意清空名单后,store 里的清空结果
+ * 会与本地一致(fingerprint 相同),不会误判。
+ */
+function hydrateSharedExcludes(): void {
+  const ctx = getContext();
+  if (!ctx?.extensionSettings) return;
+  const stored = readSharedExcludes(ctx.extensionSettings[SHARED_EXCLUDES_KEY]);
+  if (stored) {
+    if (!excludesHasUserData(stored) && excludesHasUserData(apiSettings)) {
+      writeSharedExcludes(true);
+    } else {
+      applySharedExcludes(stored);
+    }
+  } else {
+    sharedExcludesFingerprint = excludesFingerprint(apiSettings);
+    writeSharedExcludes(false);
+  }
+  bindSharedExcludesListener();
+}
+
 /** 写回 extension_settings 并防抖落盘到服务器(跨设备同步的关键)。 */
 function persist(): void {
   const ctx = getContext();
@@ -674,6 +820,9 @@ function persist(): void {
   ctx.extensionSettings[SETTINGS_KEY] = JSON.parse(JSON.stringify(apiSettings));
   const fingerprint = channelFingerprint(apiSettings.channels);
   if (fingerprint !== sharedChannelsFingerprint) writeSharedChannels();
+  // 排除名单有改动 → 同步写共享存储并广播(指纹比对防回环)
+  const exFingerprint = excludesFingerprint(apiSettings);
+  if (exFingerprint !== sharedExcludesFingerprint) writeSharedExcludes();
   ctx.saveSettingsDebounced?.();
 }
 
@@ -736,6 +885,9 @@ export function hydrateSettings(): void {
     ctx.extensionSettings[SETTINGS_KEY] = JSON.parse(JSON.stringify(apiSettings));
     ctx.saveSettingsDebounced?.();
   }
+
+  // 排除名单共享存储接管(在播种之后:老用户名单/新播种规则作为种子写入)
+  hydrateSharedExcludes();
 
   ready = true;
   for (const cb of readyCbs.splice(0)) {

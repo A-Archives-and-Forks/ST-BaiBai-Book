@@ -11,6 +11,7 @@
 
 import { apiSettings } from '@/api/settings';
 import { getContext, type STMessage } from '@/st/context';
+import { stripBaiBaiImageTags } from './imageTag';
 import type { LeafExtra } from './types';
 
 /** 标签固定标识(解析正则与隐藏正则都依赖它) */
@@ -297,6 +298,7 @@ export function clampToTimeTags(mes: string): string {
     .replace(RE_THINK_BLOCK, '') // 思维链
     .replace(/<!--[\s\S]+?-->/g, '') // HTML 注释
     .replace(/<horae[\s\S]*?>[\s\S]*?<\/horae[\s\S]*?>/gi, ''); // 旧 horae 格式
+  s = stripBaiBaiImageTags(s); // 柏宝绘标签(含跨行提示词);独占行时恢复插入前换行
   s = stripCustomTags(s); // 用户自定义标签
   s = stripManagedTags(s); // 仅清理插件托管的尾部旁注
 
